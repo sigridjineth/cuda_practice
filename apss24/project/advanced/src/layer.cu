@@ -80,35 +80,15 @@ __global__ void ConvTranspose2dKernel(const half* __restrict__ in,
                                       int N, int C, int H, int W,
                                       int K, int R, int S, int OH, int OW,
                                       int stride, int pad, int dilation) {
-    extern __shared__ half shared_mem[];
-    half* shared_weight = shared_mem;
-    half* shared_in = shared_mem + blockDim.x * R * S;
-
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
     int oh = blockIdx.y * blockDim.y + threadIdx.y;
     int ow = blockIdx.z * blockDim.z + threadIdx.z;
-    int k = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (oh >= OH || ow >= OW || k >= K) return;
+    if (k >= K || oh >= OH || ow >= OW) return;
 
     half sum = __float2half(0.0f);
 
     for (int c = 0; c < C; ++c) {
-        // Load weight to shared memory
-        for (int rs = threadIdx.y * blockDim.z + threadIdx.z; rs < R * S; rs += blockDim.y * blockDim.z) {
-            int r = rs / S;
-            int s = rs % S;
-            int weight_idx = (c * K * R * S + k * R * S + rs);
-            shared_weight[threadIdx.x * R * S + rs] = weight[weight_idx];
-        }
-
-        // Load input to shared memory
-        for (int hw = threadIdx.x; hw < H * W; hw += blockDim.x) {
-            int h = hw / W;
-            int w = hw % W;
-            shared_in[hw] = in[c * H * W + hw];
-        }
-        __syncthreads();
-
         for (int r = 0; r < R; ++r) {
             for (int s = 0; s < S; ++s) {
                 int h = (oh + pad - r * dilation) / stride;
@@ -116,13 +96,12 @@ __global__ void ConvTranspose2dKernel(const half* __restrict__ in,
                 if (h >= 0 && h < H && w >= 0 && w < W &&
                     (oh + pad - r * dilation) % stride == 0 &&
                     (ow + pad - s * dilation) % stride == 0) {
-                    half in_val = shared_in[h * W + w];
-                    half weight_val = shared_weight[threadIdx.x * R * S + r * S + s];
+                    half in_val = in[c * H * W + h * W + w];
+                    half weight_val = weight[k * C * R * S + c * R * S + r * S + s];
                     sum = __hadd(sum, __hmul(in_val, weight_val));
                 }
             }
         }
-        __syncthreads();
     }
 
     sum = __hadd(sum, bias[k]);
@@ -149,9 +128,7 @@ void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cuda
                  (OH + blockDim.y - 1) / blockDim.y,
                  (OW + blockDim.z - 1) / blockDim.z);
 
-    size_t shared_mem_size = (blockDim.x * R * S + H * W) * sizeof(half);
-
-    ConvTranspose2dKernel<<<gridDim, blockDim, shared_mem_size, stream>>>(
+    ConvTranspose2dKernel<<<gridDim, blockDim, 0, stream>>>(
             in->d_buf, weight->d_buf, bias->d_buf, out->d_buf,
             N, C, H, W, K, R, S, OH, OW,
             stride, pad, dilation);
