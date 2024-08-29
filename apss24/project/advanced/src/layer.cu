@@ -16,28 +16,31 @@
  * half 정밀도 활용: GPU의 native half 타입을 사용하여 연산 속도를 향상시킵니다.
  */
 __global__ void LinearKernel(half *in, half *w, half *b, half *out,
-                             size_t M, size_t N, size_t K) {
+                             size_t M, size_t N, size_t K, size_t batch_size) {
+    int batch = blockIdx.z;
     int m = blockIdx.y * blockDim.y + threadIdx.y;
     int n = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (m < M && n < N) {
+    if (batch < batch_size && m < M && n < N) {
         half sum = __float2half(0.0f);
         for (size_t k = 0; k < K; k++) {
-            sum = __hadd(sum, __hmul(in[m * K + k], w[n * K + k]));
+            sum = __hadd(sum, __hmul(in[batch * M * K + m * K + k], w[n * K + k]));
         }
-        out[m * N + n] = __hadd(sum, b[n]);
+        out[batch * M * N + m * N + n] = __hadd(sum, b[n]);
     }
 }
 
 void Linear(Tensor *in, Tensor *w, Tensor *b, Tensor *out, cudaStream_t stream) {
-    size_t M = out->shape[0];
-    size_t N = out->shape[1];
+    size_t batch_size = in->shape[0];
+    size_t M = out->shape[1];
+    size_t N = out->shape[2];
     size_t K = w->shape[1];
 
     dim3 blockDim(16, 16);
     dim3 gridDim((N + blockDim.x - 1) / blockDim.x,
-                 (M + blockDim.y - 1) / blockDim.y);
-    LinearKernel<<<gridDim, blockDim, 0, stream>>>(in->d_buf, w->d_buf, b->d_buf, out->d_buf, M, N, K);
+                 (M + blockDim.y - 1) / blockDim.y,
+                 batch_size);
+    LinearKernel<<<gridDim, blockDim, 0, stream>>>(in->d_buf, w->d_buf, b->d_buf, out->d_buf, M, N, K, batch_size);
 }
 
 /* Reshape
@@ -82,9 +85,11 @@ __global__ void ConvTranspose2dKernel(const half* __restrict__ in,
                                       int stride, int pad, int dilation) {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
     int oh = blockIdx.y * blockDim.y + threadIdx.y;
-    int ow = blockIdx.z * blockDim.z + threadIdx.z;
+    int n_ow = blockIdx.z;
+    int n = n_ow / ((OW + blockDim.z - 1) / blockDim.z);
+    int ow = (n_ow % ((OW + blockDim.z - 1) / blockDim.z)) * blockDim.z + threadIdx.z;
 
-    if (k >= K || oh >= OH || ow >= OW) return;
+    if (n >= N || k >= K || oh >= OH || ow >= OW) return;
 
     float sum = 0.0f;
 
@@ -96,7 +101,7 @@ __global__ void ConvTranspose2dKernel(const half* __restrict__ in,
                 if (h >= 0 && h < H && w >= 0 && w < W &&
                     (oh + pad - r * dilation) % stride == 0 &&
                     (ow + pad - s * dilation) % stride == 0) {
-                    float in_val = __half2float(in[c * H * W + h * W + w]);
+                    float in_val = __half2float(in[n * C * H * W + c * H * W + h * W + w]);
                     float weight_val = __half2float(weight[c * K * R * S + k * R * S + r * S + s]);
                     sum += in_val * weight_val;
                 }
@@ -105,7 +110,7 @@ __global__ void ConvTranspose2dKernel(const half* __restrict__ in,
     }
 
     sum += __half2float(bias[k]);
-    out[k * OH * OW + oh * OW + ow] = __float2half(sum);
+    out[n * K * OH * OW + k * OH * OW + oh * OW + ow] = __float2half(sum);
 }
 
 void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStream_t stream) {
@@ -123,15 +128,34 @@ void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cuda
     const size_t pad = 1;
     const size_t dilation = 1;
 
-    dim3 blockDim(8, 8, 8);
-    dim3 gridDim((K + blockDim.x - 1) / blockDim.x,
-                 (OH + blockDim.y - 1) / blockDim.y,
-                 (OW + blockDim.z - 1) / blockDim.z);
+    // 블록 크기 조정
+    dim3 blockDim(8, 8, 4);
+
+    // 그리드 크기 조정
+    dim3 gridDim(
+            (K + blockDim.x - 1) / blockDim.x,
+            (OH + blockDim.y - 1) / blockDim.y,
+            N * ((OW + blockDim.z - 1) / blockDim.z)
+    );
+
+    // CUDA 오류 체크 추가
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "CUDA error before kernel launch: %s\n", cudaGetErrorString(err));
+        exit(EXIT_FAILURE);
+    }
 
     ConvTranspose2dKernel<<<gridDim, blockDim, 0, stream>>>(
             in->d_buf, weight->d_buf, bias->d_buf, out->d_buf,
             N, C, H, W, K, R, S, OH, OW,
             stride, pad, dilation);
+
+    // 커널 실행 후 오류 체크
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "CUDA error after kernel launch: %s\n", cudaGetErrorString(err));
+        exit(EXIT_FAILURE);
+    }
 }
 
 /* BatchNorm2d (track_running_stats=False)
@@ -143,7 +167,10 @@ void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cuda
 __global__ void BatchNorm2d_kernel(half *in, half *weight, half *bias, half *out,
                                    size_t N, size_t C, size_t H, size_t W) {
     const float eps = 1e-5f;
-    size_t c = blockIdx.x;
+    size_t idx = blockIdx.x + blockIdx.y * gridDim.x;
+    if (idx >= N * C) return;
+    size_t n = idx / C;
+    size_t c = idx % C;
     size_t tid = threadIdx.x;
     size_t stride = blockDim.x;
     size_t HW = H * W;
@@ -154,7 +181,7 @@ __global__ void BatchNorm2d_kernel(half *in, half *weight, half *bias, half *out
     // Step 1: Calculate mean
     float sum = 0.0f;
     for (size_t i = tid; i < HW; i += stride) {
-        sum += __half2float(in[c * HW + i]);
+        sum += __half2float(in[(n * C + c) * HW + i]);
     }
 
     __shared__ float block_sum;
@@ -172,7 +199,7 @@ __global__ void BatchNorm2d_kernel(half *in, half *weight, half *bias, half *out
     // Step 2: Calculate variance
     float var_sum = 0.0f;
     for (size_t i = tid; i < HW; i += stride) {
-        float diff = __half2float(in[c * HW + i]) - mean;
+        float diff = __half2float(in[(n * C + c) * HW + i]) - mean;
         var_sum += diff * diff;
     }
 
@@ -193,8 +220,8 @@ __global__ void BatchNorm2d_kernel(half *in, half *weight, half *bias, half *out
     float invstd = rsqrtf(var + eps);
 
     for (size_t i = tid; i < HW; i += stride) {
-        float normalized = (__half2float(in[c * HW + i]) - mean) * invstd;
-        out[c * HW + i] = __float2half(w * normalized + b);
+        float normalized = (__half2float(in[(n * C + c) * HW + i]) - mean) * invstd;
+        out[(n * C + c) * HW + i] = __float2half(w * normalized + b);
     }
 }
 
@@ -204,8 +231,18 @@ void BatchNorm2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStre
     size_t H = in->shape[2];
     size_t W = in->shape[3];
 
-    dim3 grid(C);  // One block per channel
-    dim3 block(256);  // Adjust this based on your GPU capabilities
+    // GPU의 최대 그리드 크기를 고려하여 조정
+    int max_grid_size = 65535;  // 대부분의 GPU에서 지원하는 최대 그리드 크기
+    dim3 grid;
+    if (C * N > max_grid_size) {
+        grid.x = max_grid_size;
+        grid.y = (C * N + max_grid_size - 1) / max_grid_size;
+    } else {
+        grid.x = C;
+        grid.y = N;
+    }
+    dim3 block(256);  // 블록 크기는 그대로 유지
+
     BatchNorm2d_kernel<<<grid, block, 0, stream>>>(in->d_buf, weight->d_buf, bias->d_buf, out->d_buf, N, C, H, W);
 }
 

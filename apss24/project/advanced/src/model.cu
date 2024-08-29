@@ -205,50 +205,84 @@ void generate_images(half_cpu *input, half_cpu *output, size_t n_img) {
     Tensor *z = new Tensor({n_img, LATENT_DIM}, input);
     z->to_device_async(stream);
 
-    // 계산 시작
-    Linear(z, mlp1_w, mlp1_b, linear1_a, stream);
-    Linear(linear1_a, mlp2_w, mlp2_b, linear2_a, stream);
-    Reshape(linear2_a, reshape_a, stream);
+    // 동적으로 Activation 버퍼 생성
+    Activation *linear1_a_batch = new Activation({n_img, 16384});
+    Activation *linear2_a_batch = new Activation({n_img, 4096});
+    Activation *reshape_a_batch = new Activation({n_img, 1024, 2, 2});
+    Activation *convtrans1_a_batch = new Activation({n_img, 512, 4, 4});
+    Activation *batchnorm1_a_batch = new Activation({n_img, 512, 4, 4});
+    Activation *convtrans2_a_batch = new Activation({n_img, 256, 8, 8});
+    Activation *batchnorm2_a_batch = new Activation({n_img, 256, 8, 8});
+    Activation *convtrans3_a_batch = new Activation({n_img, 128, 16, 16});
+    Activation *batchnorm3_a_batch = new Activation({n_img, 128, 16, 16});
+    Activation *convtrans4_a_batch = new Activation({n_img, 64, 32, 32});
+    Activation *batchnorm4_a_batch = new Activation({n_img, 64, 32, 32});
+    Activation *convtrans5_a_batch = new Activation({n_img, 32, 64, 64});
+    Activation *batchnorm5_a_batch = new Activation({n_img, 32, 64, 64});
+    Activation *convtrans6_a_batch = new Activation({n_img, 32, 128, 128});
+    Activation *batchnorm6_a_batch = new Activation({n_img, 32, 128, 128});
+    Activation *conv_a_batch = new Activation({n_img, 3, 128, 128});
 
-    ConvTranspose2d(reshape_a, convtrans1_w, convtrans1_b, convtrans1_a, stream);
-    BatchNorm2d(convtrans1_a, batchnorm1_w, batchnorm1_b, batchnorm1_a, stream);
-    LeakyReLU(batchnorm1_a, stream);
+    // 계산 시작 (기존 activation 버퍼 대신 새로 생성한 batch 버퍼 사용)
+    Linear(z, mlp1_w, mlp1_b, linear1_a_batch, stream);
+    Linear(linear1_a_batch, mlp2_w, mlp2_b, linear2_a_batch, stream);
+    Reshape(linear2_a_batch, reshape_a_batch, stream);
 
-    ConvTranspose2d(batchnorm1_a, convtrans2_w, convtrans2_b, convtrans2_a, stream);
-    BatchNorm2d(convtrans2_a, batchnorm2_w, batchnorm2_b, batchnorm2_a, stream);
-    LeakyReLU(batchnorm2_a, stream);
+    ConvTranspose2d(reshape_a_batch, convtrans1_w, convtrans1_b, convtrans1_a_batch, stream);
+    BatchNorm2d(convtrans1_a_batch, batchnorm1_w, batchnorm1_b, batchnorm1_a_batch, stream);
+    LeakyReLU(batchnorm1_a_batch, stream);
 
-    ConvTranspose2d(batchnorm2_a, convtrans3_w, convtrans3_b, convtrans3_a, stream);
-    BatchNorm2d(convtrans3_a, batchnorm3_w, batchnorm3_b, batchnorm3_a, stream);
-    LeakyReLU(batchnorm3_a, stream);
+    ConvTranspose2d(batchnorm1_a_batch, convtrans2_w, convtrans2_b, convtrans2_a_batch, stream);
+    BatchNorm2d(convtrans2_a_batch, batchnorm2_w, batchnorm2_b, batchnorm2_a_batch, stream);
+    LeakyReLU(batchnorm2_a_batch, stream);
 
-    ConvTranspose2d(batchnorm3_a, convtrans4_w, convtrans4_b, convtrans4_a, stream);
-    BatchNorm2d(convtrans4_a, batchnorm4_w, batchnorm4_b, batchnorm4_a, stream);
-    LeakyReLU(batchnorm4_a, stream);
+    ConvTranspose2d(batchnorm2_a_batch, convtrans3_w, convtrans3_b, convtrans3_a_batch, stream);
+    BatchNorm2d(convtrans3_a_batch, batchnorm3_w, batchnorm3_b, batchnorm3_a_batch, stream);
+    LeakyReLU(batchnorm3_a_batch, stream);
 
-    ConvTranspose2d(batchnorm4_a, convtrans5_w, convtrans5_b, convtrans5_a, stream);
-    BatchNorm2d(convtrans5_a, batchnorm5_w, batchnorm5_b, batchnorm5_a, stream);
-    LeakyReLU(batchnorm5_a, stream);
+    ConvTranspose2d(batchnorm3_a_batch, convtrans4_w, convtrans4_b, convtrans4_a_batch, stream);
+    BatchNorm2d(convtrans4_a_batch, batchnorm4_w, batchnorm4_b, batchnorm4_a_batch, stream);
+    LeakyReLU(batchnorm4_a_batch, stream);
 
-    ConvTranspose2d(batchnorm5_a, convtrans6_w, convtrans6_b, convtrans6_a, stream);
-    BatchNorm2d(convtrans6_a, batchnorm6_w, batchnorm6_b, batchnorm6_a, stream);
-    LeakyReLU(batchnorm6_a, stream);
+    ConvTranspose2d(batchnorm4_a_batch, convtrans5_w, convtrans5_b, convtrans5_a_batch, stream);
+    BatchNorm2d(convtrans5_a_batch, batchnorm5_w, batchnorm5_b, batchnorm5_a_batch, stream);
+    LeakyReLU(batchnorm5_a_batch, stream);
 
-    Conv2d(batchnorm6_a, conv_w, conv_b, conv_a, stream);
-    Tanh(conv_a, stream);
+    ConvTranspose2d(batchnorm5_a_batch, convtrans6_w, convtrans6_b, convtrans6_a_batch, stream);
+    BatchNorm2d(convtrans6_a_batch, batchnorm6_w, batchnorm6_b, batchnorm6_a_batch, stream);
+    LeakyReLU(batchnorm6_a_batch, stream);
+
+    Conv2d(batchnorm6_a_batch, conv_w, conv_b, conv_a_batch, stream);
+    Tanh(conv_a_batch, stream);
 
     // 결과를 비동기적으로 호스트로 전송
-    conv_a->to_host_async(stream);
+    conv_a_batch->to_host_async(stream);
 
     // 스트림 동기화
     CHECK_CUDA(cudaStreamSynchronize(stream));
 
     // 결과를 출력 버퍼로 복사
-    memcpy(output, conv_a->buf, n_img * 3 * 128 * 128 * sizeof(half_cpu));
+    memcpy(output, conv_a_batch->buf, n_img * 3 * 128 * 128 * sizeof(half_cpu));
 
     // CUDA 스트림 정리
     CHECK_CUDA(cudaStreamDestroy(stream));
 
-    // 임시 텐서 메모리 해제
+    // 임시 텐서 및 Activation 버퍼 메모리 해제
     delete z;
+    delete linear1_a_batch;
+    delete linear2_a_batch;
+    delete reshape_a_batch;
+    delete convtrans1_a_batch;
+    delete batchnorm1_a_batch;
+    delete convtrans2_a_batch;
+    delete batchnorm2_a_batch;
+    delete convtrans3_a_batch;
+    delete batchnorm3_a_batch;
+    delete convtrans4_a_batch;
+    delete batchnorm4_a_batch;
+    delete convtrans5_a_batch;
+    delete batchnorm5_a_batch;
+    delete convtrans6_a_batch;
+    delete batchnorm6_a_batch;
+    delete conv_a_batch;
 }
