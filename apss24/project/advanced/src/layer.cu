@@ -234,8 +234,10 @@ __global__ void Conv2d_kernel(half *in, half *weight, half *bias, half *out,
                               size_t stride, size_t pad, size_t dilation) {
     int n = blockIdx.x;
     int k = blockIdx.y;
-    int oh = threadIdx.x;
-    int ow = threadIdx.y;
+    int oh_block = blockIdx.z / ((OW + blockDim.y - 1) / blockDim.y);
+    int ow_block = blockIdx.z % ((OW + blockDim.y - 1) / blockDim.y);
+    int oh = oh_block * blockDim.x + threadIdx.x;
+    int ow = ow_block * blockDim.y + threadIdx.y;
 
     if (oh < OH && ow < OW) {
         half sum = bias[k];
@@ -270,8 +272,10 @@ void Conv2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStream_t 
     const size_t pad = 1;
     const size_t dilation = 1;
 
-    dim3 grid(N, K);
-    dim3 block(OH, OW);
+    // Adjust block and grid dimensions
+    dim3 block(16, 16);  // 256 threads per block
+    dim3 grid(N, K, ((OH + block.x - 1) / block.x) * ((OW + block.y - 1) / block.y));
+
     Conv2d_kernel<<<grid, block, 0, stream>>>(in->d_buf, weight->d_buf, bias->d_buf, out->d_buf,
                                               N, C, H, W, K, R, S, OH, OW,
                                               stride, pad, dilation);
