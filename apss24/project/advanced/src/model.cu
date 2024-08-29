@@ -241,7 +241,7 @@ void generate_images(half_cpu *input, half_cpu *output, size_t n_img) {
     conv_a->to_host_async(stream);
 
     // 스트림 동기화
-    CHECK_CUDA(cudaStreamSynchronize(stream));
+    // CHECK_CUDA(cudaStreamSynchronize(stream));
 
     // 결과를 출력 버퍼로 복사
     memcpy(output, conv_a->buf, n_img * 3 * 128 * 128 * sizeof(half_cpu));
