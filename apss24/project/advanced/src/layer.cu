@@ -12,7 +12,7 @@
   } while (0)
 
 /* Linear
- * GPU 병렬화: 각 출력 요소를 병렬로 계산합니다.
+ * GPU 병렬화: 행렬-벡터 곱셈 알고리즘을 사용하여 병렬화합니다.
  * half 정밀도 활용: GPU의 native half 타입을 사용하여 연산 속도를 향상시킵니다.
  */
 __global__ void LinearKernel(half *in, half *w, half *b, half *out,
@@ -27,14 +27,17 @@ __global__ void LinearKernel(half *in, half *w, half *b, half *out,
 
     half sum = __float2half(0.0f);
     for (int i = 0; i < K; i += 16) {
-        if (i + tx < K && by * 16 + ty < M) {
-            input[tx] = in[(by * 16 + ty) * K + i + tx];
+        int input_idx = (by * 16 + ty) * K + i + tx;
+        int weight_idx = (bx * 16 + tx) * K + i + ty;
+
+        if (input_idx < M * K) {
+            input[tx] = in[input_idx];
         } else {
             input[tx] = __float2half(0.0f);
         }
 
-        if (i + ty < K && bx * 16 + tx < N) {
-            weights[tx][ty] = w[(bx * 16 + tx) * K + i + ty];
+        if (weight_idx < N * K) {
+            weights[tx][ty] = w[weight_idx];
         }
 
         __syncthreads();
@@ -46,8 +49,9 @@ __global__ void LinearKernel(half *in, half *w, half *b, half *out,
         __syncthreads();
     }
 
-    if (by * 16 + ty < M && bx * 16 + tx < N) {
-        out[(by * 16 + ty) * N + bx * 16 + tx] = __hadd(sum, b[bx * 16 + tx]);
+    int output_idx = (by * 16 + ty) * N + bx * 16 + tx;
+    if (output_idx < M * N) {
+        out[output_idx] = __hadd(sum, b[bx * 16 + tx]);
     }
 }
 
@@ -95,8 +99,6 @@ void Reshape(Tensor *in, Tensor *out, cudaStream_t stream) {
  * @param [in3]   bias: [K]
  * @param [out]    out: [N, K, OH, OW]
  */
-
-
 __global__ void ConvTranspose2dKernel(const half* __restrict__ in,
                                       const half* __restrict__ weight,
                                       const half* __restrict__ bias,
@@ -152,7 +154,6 @@ __global__ void ConvTranspose2dKernel(const half* __restrict__ in,
     out[k * OH * OW + oh * OW + ow] = __float2half(sum);
 }
 
-
 void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStream_t stream) {
     size_t N = in->shape[0];
     size_t C = in->shape[1];
@@ -170,7 +171,7 @@ void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cuda
 
     int shared_mem_size = (K * R * S + C * R * S) * sizeof(half);
 
-    dim3 blockDim(16, 8, 8);
+    dim3 blockDim(8, 4, 4);
     dim3 gridDim((K + blockDim.x - 1) / blockDim.x,
                  (OH + blockDim.y - 1) / blockDim.y,
                  (OW + blockDim.z - 1) / blockDim.z);
@@ -202,9 +203,12 @@ __global__ void BatchNorm2d_kernel(half *in, half *weight, half *bias, half *out
     float thread_var_sum = 0.0f;
 
     for (size_t i = tid; i < HW; i += stride) {
-        float val = __half2float(in[c * HW + i]);
-        thread_sum += val;
-        thread_var_sum += val * val;
+        size_t idx = c * HW + i;
+        if (idx < C * HW) {
+            float val = __half2float(in[idx]);
+            thread_sum += val;
+            thread_var_sum += val * val;
+        }
     }
 
     mean_sum = warp_reduce(thread_sum);
@@ -222,8 +226,11 @@ __global__ void BatchNorm2d_kernel(half *in, half *weight, half *bias, half *out
     float invstd = rsqrtf(var + eps);
 
     for (size_t i = tid; i < HW; i += stride) {
-        float normalized = (__half2float(in[c * HW + i]) - mean) * invstd;
-        out[c * HW + i] = __float2half(w * normalized + b);
+        size_t idx = c * HW + i;
+        if (idx < C * HW) {
+            float normalized = (__half2float(in[idx]) - mean) * invstd;
+            out[idx] = __float2half(w * normalized + b);
+        }
     }
 }
 
@@ -277,7 +284,6 @@ void LeakyReLU(Tensor *inout, cudaStream_t stream) {
  * @param [in3]   bias: [K]
  * @param [out]    out: [N, K, OH, OW]
  */
-
 __global__ void Conv2d_kernel(half *in, half *weight, half *bias, half *out,
                               size_t N, size_t C, size_t H, size_t W,
                               size_t K, size_t R, size_t S,
@@ -289,39 +295,32 @@ __global__ void Conv2d_kernel(half *in, half *weight, half *bias, half *out,
     int ow_block = blockIdx.z % ((OW + blockDim.y - 1) / blockDim.y);
     int oh = oh_block * blockDim.x + threadIdx.x;
     int ow = ow_block * blockDim.y + threadIdx.y;
-    if (oh < OH && ow < OW) {
+
+    if (oh < OH && ow < OW && n < N && k < K) {
         half sum = bias[k];
         for (int c = 0; c < C; c++) {
             for (int r = 0; r < R; r++) {
                 int h = oh * stride - pad + r * dilation;
                 int w = ow * stride - pad;
                 if (h >= 0 && h < H) {
-                    //if (S >= 4) {
-                    //if (-1) {
 #pragma unroll
-                    for (int s = 0; s < 4; s++) {
-                        if (w >= 0 && w < W) {
-                            sum = __hadd(sum, __hmul(in[n * C * H * W + c * H * W + h * W + w],
+                    for (int s = 0; s < S; s++) {
+                        int input_idx = n * C * H * W + c * H * W + h * W + w;
+                        if (w >= 0 && w < W && input_idx < n * C * H * W) {
+                            sum = __hadd(sum, __hmul(in[input_idx],
                                                      weight[k * C * R * S + c * R * S + r * S + s]));
                         }
                         w += dilation;
                     }
-                    // } else {
-                    //     for (int s = 0; s < S; s++) {
-                    //         if (w >= 0 && w < W) {
-                    //             sum = __hadd(sum, __hmul(in[n * C * H * W + c * H * W + h * W + w],
-                    //                                      weight[k * C * R * S + c * R * S + r * S + s]));
-                    //         }
-                    //         w += dilation;
-                    //     }
-                    // }
                 }
             }
         }
-        out[n * K * OH * OW + k * OH * OW + oh * OW + ow] = sum;
+        int output_idx = n * K * OH * OW + k * OH * OW + oh * OW + ow;
+        if (output_idx < n * K * OH * OW) {
+            out[output_idx] = sum;
+        }
     }
 }
-
 
 void Conv2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStream_t stream) {
     size_t N = in->shape[0];
@@ -338,8 +337,7 @@ void Conv2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStream_t 
     const size_t pad = 1;
     const size_t dilation = 1;
 
-    // Adjust block and grid dimensions
-    dim3 block(16, 16);  // 256 threads per block
+    dim3 block(16, 16);
     dim3 grid(N, K, ((OH + block.x - 1) / block.x) * ((OW + block.y - 1) / block.y));
 
     Conv2d_kernel<<<grid, block, 0, stream>>>(in->d_buf, weight->d_buf, bias->d_buf, out->d_buf,
@@ -365,16 +363,11 @@ __global__ void Tanh_kernel(half *inout, size_t N) {
 void Tanh(Tensor *inout, cudaStream_t stream) {
     size_t N = inout->num_elem();
 
-    // Kernel launch configuration
     int blockSize = 256;
     int numBlocks = (N + blockSize - 1) / blockSize;
 
-    // Launch kernel
     Tanh_kernel<<<numBlocks, blockSize, 0, stream>>>(inout->d_buf, N);
 
-    // Check for errors
     CHECK_CUDA(cudaGetLastError());
-
-    // Synchronize stream to ensure the kernel has completed
     CHECK_CUDA(cudaStreamSynchronize(stream));
 }
