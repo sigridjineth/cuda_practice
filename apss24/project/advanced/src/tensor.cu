@@ -15,7 +15,7 @@ Tensor::Tensor(const vector<size_t> &shape_) {
     ndim = shape_.size();
     for (size_t i = 0; i < ndim; i++) { shape[i] = shape_[i]; }
     size_t N_ = num_elem();
-    CHECK_CUDA(cudaMallocHost(&buf, N_ * sizeof(half_cpu))); // Use pinned memory
+    CHECK_CUDA(cudaMallocHost(&buf, N_ * sizeof(half_cpu))); // Pinned memory
     CHECK_CUDA(cudaMalloc(&d_buf, N_ * sizeof(half)));
 }
 
@@ -23,10 +23,10 @@ Tensor::Tensor(const vector<size_t> &shape_, half_cpu *buf_) {
     ndim = shape_.size();
     for (size_t i = 0; i < ndim; i++) { shape[i] = shape_[i]; }
     size_t N_ = num_elem();
-    CHECK_CUDA(cudaMallocHost(&buf, N_ * sizeof(half_cpu))); // Use pinned memory
+    CHECK_CUDA(cudaMallocHost(&buf, N_ * sizeof(half_cpu))); // Pinned memory
     memcpy(buf, buf_, N_ * sizeof(half_cpu));
     CHECK_CUDA(cudaMalloc(&d_buf, N_ * sizeof(half)));
-    to_device();
+    to_device_async(nullptr); // Asynchronous transfer
 }
 
 Tensor::~Tensor() {
@@ -40,16 +40,6 @@ size_t Tensor::num_elem() {
     return size;
 }
 
-void Tensor::to_device() {
-    size_t N_ = num_elem();
-    CHECK_CUDA(cudaMemcpy(d_buf, buf, N_ * sizeof(half), cudaMemcpyHostToDevice));
-}
-
-void Tensor::to_host() {
-    size_t N_ = num_elem();
-    CHECK_CUDA(cudaMemcpy(buf, d_buf, N_ * sizeof(half), cudaMemcpyDeviceToHost));
-}
-
 void Tensor::to_device_async(cudaStream_t stream) {
     size_t N_ = num_elem();
     CHECK_CUDA(cudaMemcpyAsync(d_buf, buf, N_ * sizeof(half), cudaMemcpyHostToDevice, stream));
@@ -58,4 +48,15 @@ void Tensor::to_device_async(cudaStream_t stream) {
 void Tensor::to_host_async(cudaStream_t stream) {
     size_t N_ = num_elem();
     CHECK_CUDA(cudaMemcpyAsync(buf, d_buf, N_ * sizeof(half), cudaMemcpyDeviceToHost, stream));
+}
+
+// Synchronous versions (for backwards compatibility)
+void Tensor::to_device() {
+    to_device_async(nullptr);
+    CHECK_CUDA(cudaDeviceSynchronize());
+}
+
+void Tensor::to_host() {
+    to_host_async(nullptr);
+    CHECK_CUDA(cudaDeviceSynchronize());
 }

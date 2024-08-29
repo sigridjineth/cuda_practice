@@ -20,6 +20,11 @@ void Conv2d(Tensor *in, Tensor *w, Tensor *b, Tensor *out, cudaStream_t stream);
 /* Other operations */
 void BatchNorm2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStream_t stream);
 
+/* Fused operations */
+void ConvTranspose2dBatchNormLeakyReLU(Tensor *in, Tensor *weight, Tensor *bias,
+                                       Tensor *bn_weight, Tensor *bn_bias,
+                                       Tensor *out, cudaStream_t stream);
+
 /* CUDA stream management */
 void initializeCUDA();
 void finalizeCUDA();
