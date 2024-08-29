@@ -132,42 +132,78 @@ void Reshape(Tensor *in, Tensor *out) {
  * 'OH' is the height of the output tensor.
  * 'OW' is the width of the output tensor.
  */
-void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out) {
-  size_t C = in->shape[1];
-  size_t H = in->shape[2];
-  size_t W = in->shape[3];
-  size_t K = weight->shape[1];
-  size_t R = weight->shape[2];
-  size_t S = weight->shape[3];
-  size_t OH = out->shape[2];
-  size_t OW = out->shape[3];
- 
-  const size_t stride = 2;
-  const size_t pad = 1;
-  const size_t dilation = 1;
+__global__ void ConvTranspose2dKernel(const half* in, const half* weight, const half* bias,
+                                      half* out, int N, int C, int H, int W,
+                                      int K, int R, int S, int OH, int OW,
+                                      int stride, int pad, int dilation) {
+    int oc = blockIdx.x;
+    int oh = blockIdx.y * blockDim.y + threadIdx.y;
+    int ow = blockIdx.z * blockDim.z + threadIdx.z;
 
-#pragma omp parallel for
-  for (size_t oc = 0; oc < K; ++oc) {
-    for (size_t oh = 0; oh < OH; ++oh) {
-      for (size_t ow = 0; ow < OW; ++ow) {
-        half_cpu o = bias->buf[oc];
-        for (size_t c = 0; c < C; ++c) {
-          for (size_t r = 0; r < R; ++r) {
-            for (size_t s = 0; s < S; ++s) {
-              if ((oh - (r * dilation - pad)) % stride != 0) continue;
-              if ((ow - (s * dilation - pad)) % stride != 0) continue;
-              size_t h = (oh - (r * dilation - pad)) / stride;
-              size_t w = (ow - (s * dilation - pad)) / stride;
-              if (h >= H || w >= W) continue;
-              o += in->buf[c * H * W + h * W + w] * 
-                weight->buf[c * K * R * S + oc * R * S + r * S + s];
+    if (oh >= OH || ow >= OW) return;
+
+    half sum = __float2half(0.0f);
+    for (int c = 0; c < C; ++c) {
+        for (int r = 0; r < R; ++r) {
+            for (int s = 0; s < S; ++s) {
+                int h = (oh + pad - r * dilation) / stride;
+                int w = (ow + pad - s * dilation) / stride;
+                if (h < 0 || h >= H || w < 0 || w >= W) continue;
+                if ((oh + pad - r * dilation) % stride != 0) continue;
+                if ((ow + pad - s * dilation) % stride != 0) continue;
+
+                half in_val = in[c * H * W + h * W + w];
+                half weight_val = weight[c * K * R * S + oc * R * S + r * S + s];
+                sum = __hadd(sum, __hmul(in_val, weight_val));
             }
-          }
         }
-        out->buf[oc * OH * OW + oh * OW + ow] = o;
-      }
     }
-  }
+    out[oc * OH * OW + oh * OW + ow] = __hadd(sum, bias[oc]);
+}
+
+void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out) {
+    size_t N = in->shape[0];
+    size_t C = in->shape[1];
+    size_t H = in->shape[2];
+    size_t W = in->shape[3];
+    size_t K = weight->shape[1];
+    size_t R = weight->shape[2];
+    size_t S = weight->shape[3];
+    size_t OH = out->shape[2];
+    size_t OW = out->shape[3];
+
+    const size_t stride = 2;
+    const size_t pad = 1;
+    const size_t dilation = 1;
+
+    half *d_in, *d_weight, *d_bias, *d_out;
+
+    // Allocate device memory
+    CHECK_CUDA(cudaMalloc(&d_in, N * C * H * W * sizeof(half)));
+    CHECK_CUDA(cudaMalloc(&d_weight, C * K * R * S * sizeof(half)));
+    CHECK_CUDA(cudaMalloc(&d_bias, K * sizeof(half)));
+    CHECK_CUDA(cudaMalloc(&d_out, N * K * OH * OW * sizeof(half)));
+
+    // Copy data to device
+    CHECK_CUDA(cudaMemcpy(d_in, in->buf, N * C * H * W * sizeof(half), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_weight, weight->buf, C * K * R * S * sizeof(half), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_bias, bias->buf, K * sizeof(half), cudaMemcpyHostToDevice));
+
+    // Launch kernel
+    dim3 blockDim(1, 16, 16);
+    dim3 gridDim(K, (OH + blockDim.y - 1) / blockDim.y, (OW + blockDim.z - 1) / blockDim.z);
+    ConvTranspose2dKernel<<<gridDim, blockDim>>>(d_in, d_weight, d_bias, d_out,
+                                                 N, C, H, W, K, R, S, OH, OW,
+                                                 stride, pad, dilation);
+
+    // Copy result back to host
+    CHECK_CUDA(cudaMemcpy(out->buf, d_out, N * K * OH * OW * sizeof(half), cudaMemcpyDeviceToHost));
+
+    // Free device memory
+    CHECK_CUDA(cudaFree(d_in));
+    CHECK_CUDA(cudaFree(d_weight));
+    CHECK_CUDA(cudaFree(d_bias));
+    CHECK_CUDA(cudaFree(d_out));
 }
 
 /* BatchNorm2d (track_running_stats=False)
