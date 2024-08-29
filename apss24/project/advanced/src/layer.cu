@@ -67,23 +67,21 @@ void Reshape(Tensor *in, Tensor *out, cudaStream_t stream) {
     ReshapeKernel<<<numBlocks, blockSize, 0, stream>>>(in->d_buf, out->d_buf, N, D, C, H, W);
 }
 
-#include "layer.h"
-#include <cuda_fp16.h>
+// Utility function to convert float to half
+__device__ __forceinline__ half float_to_half(float f) {
+    return __float2half(f);
+}
 
-#define TILE_SIZE 16
-
-__global__ void ConvTranspose2dKernel(const half* __restrict__ in,
-                                      const half* __restrict__ weight,
-                                      const half* __restrict__ bias,
-                                      half* __restrict__ out,
-                                      int N, int C, int H, int W,
+__global__ void ConvTranspose2dKernel(const half* in, const half* weight, const half* bias,
+                                      half* out, int N, int C, int H, int W,
                                       int K, int R, int S, int OH, int OW,
                                       int stride, int pad, int dilation) {
-    int oc = blockIdx.x;
-    int oh = blockIdx.y * blockDim.y + threadIdx.y;
-    int ow = blockIdx.z * blockDim.z + threadIdx.z;
+    int n = blockIdx.x;
+    int k = blockIdx.y;
+    int oh = blockIdx.z * blockDim.y + threadIdx.y;
+    int ow = threadIdx.x;
 
-    if (oh >= OH || ow >= OW) return;
+    if (n >= N || k >= K || oh >= OH || ow >= OW) return;
 
     half sum = __float2half(0.0f);
     for (int c = 0; c < C; ++c) {
@@ -95,13 +93,13 @@ __global__ void ConvTranspose2dKernel(const half* __restrict__ in,
                 if ((oh + pad - r * dilation) % stride != 0) continue;
                 if ((ow + pad - s * dilation) % stride != 0) continue;
 
-                half in_val = in[c * H * W + h * W + w];
-                half weight_val = weight[c * K * R * S + oc * R * S + r * S + s];
+                half in_val = in[(n * C + c) * H * W + h * W + w];
+                half weight_val = weight[(c * K + k) * R * S + r * S + s];
                 sum = __hadd(sum, __hmul(in_val, weight_val));
             }
         }
     }
-    out[oc * OH * OW + oh * OW + ow] = __hadd(sum, bias[oc]);
+    out[(n * K + k) * OH * OW + oh * OW + ow] = __hadd(sum, bias[k]);
 }
 
 void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStream_t stream) {
@@ -119,20 +117,11 @@ void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cuda
     const size_t pad = 1;
     const size_t dilation = 1;
 
-    dim3 blockDim(1, 16, 16);
-    dim3 gridDim(K, (OH + blockDim.y - 1) / blockDim.y, (OW + blockDim.z - 1) / blockDim.z);
-    ConvTranspose2dKernel<<<gridDim, blockDim, 0, stream>>>(
-            in->d_buf, weight->d_buf, bias->d_buf, out->d_buf,
-            N, C, H, W, K, R, S, OH, OW,
-            stride, pad, dilation
-    );
-
-    // Check for errors
-    cudaError_t error = cudaGetLastError();
-    if (error != cudaSuccess) {
-        fprintf(stderr, "CUDA error: %s\n", cudaGetErrorString(error));
-        exit(-1);
-    }
+    dim3 blockDim(32, 8);
+    dim3 gridDim(N, K, (OH + blockDim.y - 1) / blockDim.y);
+    ConvTranspose2dKernel<<<gridDim, blockDim, 0, stream>>>(in->d_buf, weight->d_buf, bias->d_buf, out->d_buf,
+                                                            N, C, H, W, K, R, S, OH, OW,
+                                                            stride, pad, dilation);
 }
 
 /* BatchNorm2d (track_running_stats=False)
