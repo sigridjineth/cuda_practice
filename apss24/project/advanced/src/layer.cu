@@ -29,48 +29,20 @@ __global__ void LinearKernel(half *in, half *w, half *b, half *out,
     }
 }
 
-void Linear(Tensor *in, Tensor *w, Tensor *b, Tensor *out) {
+void Linear(Tensor *in, Tensor *w, Tensor *b, Tensor *out, cudaStream_t stream) {
     size_t M = out->shape[0];
     size_t N = out->shape[1];
     size_t K = w->shape[1];
 
-    half *d_in, *d_w, *d_b, *d_out;
-
-    // Allocate device memory
-    CHECK_CUDA(cudaMalloc(&d_in, M * K * sizeof(half)));
-    CHECK_CUDA(cudaMalloc(&d_w, N * K * sizeof(half)));
-    CHECK_CUDA(cudaMalloc(&d_b, N * sizeof(half)));
-    CHECK_CUDA(cudaMalloc(&d_out, M * N * sizeof(half)));
-
-    // Copy data to device
-    CHECK_CUDA(cudaMemcpy(d_in, in->buf, M * K * sizeof(half), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_w, w->buf, N * K * sizeof(half), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_b, b->buf, N * sizeof(half), cudaMemcpyHostToDevice));
-
-    // Launch kernel
     dim3 blockDim(16, 16);
     dim3 gridDim((N + blockDim.x - 1) / blockDim.x,
                  (M + blockDim.y - 1) / blockDim.y);
-    LinearKernel<<<gridDim, blockDim>>>(d_in, d_w, d_b, d_out, M, N, K);
-
-    // Copy result back to host
-    CHECK_CUDA(cudaMemcpy(out->buf, d_out, M * N * sizeof(half), cudaMemcpyDeviceToHost));
-
-    // Free device memory
-    CHECK_CUDA(cudaFree(d_in));
-    CHECK_CUDA(cudaFree(d_w));
-    CHECK_CUDA(cudaFree(d_b));
-    CHECK_CUDA(cudaFree(d_out));
+    LinearKernel<<<gridDim, blockDim, 0, stream>>>(in->d_buf, w->d_buf, b->d_buf, out->d_buf, M, N, K);
 }
 
-/* Reshape 
+/* Reshape
  * @param [in]   in: [N, D]
  * @param [out] out: [N, C, H, W]
- * 'N' is the number of input tensors.
- * 'D' is the dimension of the input tensor.
- * 'C' is the number of channels.
- * 'H' is the height of the output tensor.
- * 'W' is the width of the output tensor.
  */
 __global__ void ReshapeKernel(half *in, half *out,
                               size_t N, size_t D, size_t C, size_t H, size_t W) {
@@ -82,34 +54,17 @@ __global__ void ReshapeKernel(half *in, half *out,
     }
 }
 
-void Reshape(Tensor *in, Tensor *out) {
+void Reshape(Tensor *in, Tensor *out, cudaStream_t stream) {
     size_t N = in->shape[0];
     size_t D = in->shape[1];
     size_t C = out->shape[1];
     size_t H = out->shape[2];
     size_t W = out->shape[3];
 
-    half *d_in, *d_out;
-
-    // Allocate device memory
-    CHECK_CUDA(cudaMalloc(&d_in, N * D * sizeof(half)));
-    CHECK_CUDA(cudaMalloc(&d_out, N * C * H * W * sizeof(half)));
-
-    // Copy data to device
-    CHECK_CUDA(cudaMemcpy(d_in, in->buf, N * D * sizeof(half), cudaMemcpyHostToDevice));
-
-    // Launch kernel
     int totalThreads = N * C * H * W;
     int blockSize = 256;
     int numBlocks = (totalThreads + blockSize - 1) / blockSize;
-    ReshapeKernel<<<numBlocks, blockSize>>>(d_in, d_out, N, D, C, H, W);
-
-    // Copy result back to host
-    CHECK_CUDA(cudaMemcpy(out->buf, d_out, N * C * H * W * sizeof(half), cudaMemcpyDeviceToHost));
-
-    // Free device memory
-    CHECK_CUDA(cudaFree(d_in));
-    CHECK_CUDA(cudaFree(d_out));
+    ReshapeKernel<<<numBlocks, blockSize, 0, stream>>>(in->d_buf, out->d_buf, N, D, C, H, W);
 }
 
 /* ConvTranspose2d
@@ -117,20 +72,6 @@ void Reshape(Tensor *in, Tensor *out) {
  * @param [in2] weight: [C, K, R, S]
  * @param [in3]   bias: [K]
  * @param [out]    out: [N, K, OH, OW]
- *    
- *    OH = (H - 1) * stride - 2 * pad + dilation * (R - 1) + output_pad + 1
- *    OW = (W - 1) * stride - 2 * pad + dilation * (S - 1) + output_pad + 1
- *    In this model, R = S = 3, stride = 2, pad = 1, dilation = 1, output_pad = 1
- *
- * 'N' is the number of input tensors.
- * 'C' is the number of input channels.
- * 'H' is the height of the input tensor.
- * 'W' is the width of the input tensor.
- * 'K' is the number of output channels.
- * 'R' is the height of the filter.
- * 'S' is the width of the filter.
- * 'OH' is the height of the output tensor.
- * 'OW' is the width of the output tensor.
  */
 __global__ void ConvTranspose2dKernel(const half* in, const half* weight, const half* bias,
                                       half* out, int N, int C, int H, int W,
@@ -161,7 +102,7 @@ __global__ void ConvTranspose2dKernel(const half* in, const half* weight, const 
     out[oc * OH * OW + oh * OW + ow] = __hadd(sum, bias[oc]);
 }
 
-void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out) {
+void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStream_t stream) {
     size_t N = in->shape[0];
     size_t C = in->shape[1];
     size_t H = in->shape[2];
@@ -176,48 +117,18 @@ void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out) {
     const size_t pad = 1;
     const size_t dilation = 1;
 
-    half *d_in, *d_weight, *d_bias, *d_out;
-
-    // Allocate device memory
-    CHECK_CUDA(cudaMalloc(&d_in, N * C * H * W * sizeof(half)));
-    CHECK_CUDA(cudaMalloc(&d_weight, C * K * R * S * sizeof(half)));
-    CHECK_CUDA(cudaMalloc(&d_bias, K * sizeof(half)));
-    CHECK_CUDA(cudaMalloc(&d_out, N * K * OH * OW * sizeof(half)));
-
-    // Copy data to device
-    CHECK_CUDA(cudaMemcpy(d_in, in->buf, N * C * H * W * sizeof(half), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_weight, weight->buf, C * K * R * S * sizeof(half), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_bias, bias->buf, K * sizeof(half), cudaMemcpyHostToDevice));
-
-    // Launch kernel
     dim3 blockDim(1, 16, 16);
     dim3 gridDim(K, (OH + blockDim.y - 1) / blockDim.y, (OW + blockDim.z - 1) / blockDim.z);
-    ConvTranspose2dKernel<<<gridDim, blockDim>>>(d_in, d_weight, d_bias, d_out,
-                                                 N, C, H, W, K, R, S, OH, OW,
-                                                 stride, pad, dilation);
-
-    // Copy result back to host
-    CHECK_CUDA(cudaMemcpy(out->buf, d_out, N * K * OH * OW * sizeof(half), cudaMemcpyDeviceToHost));
-
-    // Free device memory
-    CHECK_CUDA(cudaFree(d_in));
-    CHECK_CUDA(cudaFree(d_weight));
-    CHECK_CUDA(cudaFree(d_bias));
-    CHECK_CUDA(cudaFree(d_out));
+    ConvTranspose2dKernel<<<gridDim, blockDim, 0, stream>>>(in->d_buf, weight->d_buf, bias->d_buf, out->d_buf,
+                                                            N, C, H, W, K, R, S, OH, OW,
+                                                            stride, pad, dilation);
 }
 
 /* BatchNorm2d (track_running_stats=False)
  * @param [in1]     in: [N, C, H, W]
  * @param [in2] weight: [C]
  * @param [in3]   bias: [C]
- * @param [out]    out: [N, C, H, W]  
- * 
- *    out = weight * (in - mean) / sqrt(var + 1e-5) + bias 
- * 
- * 'N' is the number of input tensors.
- * 'C' is the number of channels.
- * 'H' is the height of the input tensor.
- * 'W' is the width of the input tensor.
+ * @param [out]    out: [N, C, H, W]
  */
 __global__ void BatchNorm2d_kernel(half *in, half *weight, half *bias, half *out,
                                    size_t N, size_t C, size_t H, size_t W) {
@@ -277,53 +188,15 @@ __global__ void BatchNorm2d_kernel(half *in, half *weight, half *bias, half *out
     }
 }
 
-void BatchNorm2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out) {
+void BatchNorm2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStream_t stream) {
     size_t N = in->shape[0];
     size_t C = in->shape[1];
     size_t H = in->shape[2];
     size_t W = in->shape[3];
 
-    half *d_in, *d_weight, *d_bias, *d_out;
-
-    // Allocate device memory
-    CHECK_CUDA(cudaMalloc(&d_in, N * C * H * W * sizeof(half)));
-    CHECK_CUDA(cudaMalloc(&d_weight, C * sizeof(half)));
-    CHECK_CUDA(cudaMalloc(&d_bias, C * sizeof(half)));
-    CHECK_CUDA(cudaMalloc(&d_out, N * C * H * W * sizeof(half)));
-
-    // Copy data to device
-    CHECK_CUDA(cudaMemcpy(d_in, in->buf, N * C * H * W * sizeof(half), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_weight, weight->buf, C * sizeof(half), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_bias, bias->buf, C * sizeof(half), cudaMemcpyHostToDevice));
-
-    // Launch kernel
     dim3 grid(C);  // One block per channel
     dim3 block(256);  // Adjust this based on your GPU capabilities
-    BatchNorm2d_kernel<<<grid, block>>>(d_in, d_weight, d_bias, d_out, N, C, H, W);
-    CHECK_CUDA(cudaGetLastError());
-
-    // Copy result back to host
-    CHECK_CUDA(cudaMemcpy(out->buf, d_out, N * C * H * W * sizeof(half), cudaMemcpyDeviceToHost));
-
-    // Free device memory
-    CHECK_CUDA(cudaFree(d_in));
-    CHECK_CUDA(cudaFree(d_weight));
-    CHECK_CUDA(cudaFree(d_bias));
-    CHECK_CUDA(cudaFree(d_out));
-}
-
-/* LeakyReLU
- * @param [in & out] inout: [N]
- * 'N' is the number of elements in the tensor.
- */
-void LeakyReLU(Tensor *inout) {
-  size_t N = inout->num_elem();
-
-  const half_cpu alpha = 0.01_h;
-
-  for (size_t i = 0; i < N; i++) {
-    if (inout->buf[i] < 0) { inout->buf[i] *= alpha; }
-  }
+    BatchNorm2d_kernel<<<grid, block, 0, stream>>>(in->d_buf, weight->d_buf, bias->d_buf, out->d_buf, N, C, H, W);
 }
 
 /* LeakyReLU GPU kernel
@@ -331,31 +204,21 @@ void LeakyReLU(Tensor *inout) {
  * 'N' is the number of elements in the tensor.
  */
 __global__ void LeakyReLU_kernel(half *inout, size_t N, half alpha) {
-  size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx < N) {
-    if (inout[idx] < half(0)) { inout[idx] *= alpha; }
-  }
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < N) {
+        if (inout[idx] < half(0)) { inout[idx] *= alpha; }
+    }
 }
 
 /* LeakyReLU using CUDA GPU
  * @param [in & out] inout: [N]
  * 'N' is the number of elements in the tensor.
  */
-void LeakyReLU_cuda(Tensor *inout) {
-  size_t N = inout->num_elem();
+void LeakyReLU(Tensor *inout, cudaStream_t stream) {
+    size_t N = inout->num_elem();
+    const half alpha = 0.01;
 
-  const half alpha = 0.01;
-  
-  half *d_inout;
-
-  CHECK_CUDA(cudaMalloc(&d_inout, N * sizeof(half)));
-  CHECK_CUDA(cudaMemcpy(d_inout, inout->buf, N * sizeof(half), cudaMemcpyHostToDevice));
-
-  LeakyReLU_kernel<<<(N + 255) / 256, 256>>>(d_inout, N, alpha);
-  CHECK_CUDA(cudaDeviceSynchronize());
-
-  CHECK_CUDA(cudaMemcpy(inout->buf, d_inout, N * sizeof(half), cudaMemcpyDeviceToHost));
-  CHECK_CUDA(cudaFree(d_inout));
+    LeakyReLU_kernel<<<(N + 255) / 256, 256, 0, stream>>>(inout->d_buf, N, alpha);
 }
 
 /* Conv2d
@@ -363,57 +226,55 @@ void LeakyReLU_cuda(Tensor *inout) {
  * @param [in2] weight: [K, C, R, S]
  * @param [in3]   bias: [K]
  * @param [out]    out: [N, K, OH, OW]
- *
- *   OH = (H + 2 * pad - dilation * (R - 1) - 1) / stride + 1
- *   OW = (W + 2 * pad - dilation * (S - 1) - 1) / stride + 1
- *   In this model, R = S = 3, stride = 1, pad = 1, dilation = 1
- *
- * 'N' is the number of input tensors.
- * 'C' is the number of input channels.
- * 'H' is the height of the input tensor.
- * 'W' is the width of the input tensor.
- * 'K' is the number of output channels.
- * 'R' is the height of the filter.
- * 'S' is the width of the filter.
- * 'OH' is the height of the output tensor.
- * 'OW' is the width of the output tensor.
  */
-void Conv2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out) {
-  size_t N = in->shape[0];
-  size_t C = in->shape[1];
-  size_t H = in->shape[2];
-  size_t W = in->shape[3];
-  size_t K = weight->shape[0];
-  size_t R = weight->shape[2];
-  size_t S = weight->shape[3];
-  size_t OH = out->shape[2];
-  size_t OW = out->shape[3];
+__global__ void Conv2d_kernel(half *in, half *weight, half *bias, half *out,
+                              size_t N, size_t C, size_t H, size_t W,
+                              size_t K, size_t R, size_t S,
+                              size_t OH, size_t OW,
+                              size_t stride, size_t pad, size_t dilation) {
+    int n = blockIdx.x;
+    int k = blockIdx.y;
+    int oh = threadIdx.x;
+    int ow = threadIdx.y;
 
-  const size_t stride = 1;
-  const size_t pad = 1;
-  const size_t dilation = 1;
-
-  for (size_t n = 0; n < N; n++) {
-    for (size_t oc = 0; oc < K; oc++) {
-      for (size_t oh = 0; oh < OH; oh++) {
-        for (size_t ow = 0; ow < OW; ow++) {
-          half_cpu o = bias->buf[oc];
-          for (size_t c = 0; c < C; c++) {
-            for (size_t r = 0; r < R; r++) {
-              for (size_t s = 0; s < S; s++) {
-                size_t h = oh * stride - pad + r * dilation;
-                size_t w = ow * stride - pad + s * dilation;
-                if (h >= H || w >= W) continue;
-                o += in->buf[n * C * H * W + c * H * W + h * W + w] *
-                  weight->buf[oc * C * R * S + c * R * S + r * S + s];
-              }
+    if (oh < OH && ow < OW) {
+        half sum = bias[k];
+        for (int c = 0; c < C; c++) {
+            for (int r = 0; r < R; r++) {
+                for (int s = 0; s < S; s++) {
+                    int h = oh * stride - pad + r * dilation;
+                    int w = ow * stride - pad + s * dilation;
+                    if (h >= 0 && h < H && w >= 0 && w < W) {
+                        sum = __hadd(sum, __hmul(in[n * C * H * W + c * H * W + h * W + w],
+                                                 weight[k * C * R * S + c * R * S + r * S + s]));
+                    }
+                }
             }
-          }
-          out->buf[n * K * OH * OW + oc * OH * OW + oh * OW + ow] = o;
         }
-      }
+        out[n * K * OH * OW + k * OH * OW + oh * OW + ow] = sum;
     }
-  }
+}
+
+void Conv2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStream_t stream) {
+    size_t N = in->shape[0];
+    size_t C = in->shape[1];
+    size_t H = in->shape[2];
+    size_t W = in->shape[3];
+    size_t K = weight->shape[0];
+    size_t R = weight->shape[2];
+    size_t S = weight->shape[3];
+    size_t OH = out->shape[2];
+    size_t OW = out->shape[3];
+
+    const size_t stride = 1;
+    const size_t pad = 1;
+    const size_t dilation = 1;
+
+    dim3 grid(N, K);
+    dim3 block(OH, OW);
+    Conv2d_kernel<<<grid, block, 0, stream>>>(in->d_buf, weight->d_buf, bias->d_buf, out->d_buf,
+                                              N, C, H, W, K, R, S, OH, OW,
+                                              stride, pad, dilation);
 }
 
 /* Tanh GPU kernel
@@ -434,15 +295,16 @@ __global__ void Tanh_kernel(half *inout, size_t N) {
 void Tanh(Tensor *inout) {
     size_t N = inout->num_elem();
 
-    half *d_inout;
+    // Kernel launch configuration
+    int blockSize = 256;
+    int numBlocks = (N + blockSize - 1) / blockSize;
 
-    CHECK_CUDA(cudaMalloc(&d_inout, N * sizeof(half)));
-    CHECK_CUDA(cudaMemcpy(d_inout, inout->buf, N * sizeof(half), cudaMemcpyHostToDevice));
+    // Launch kernel
+    Tanh_kernel<<<numBlocks, blockSize, 0, stream>>>(inout->d_buf, N);
 
-    Tanh_kernel<<<(N + 255) / 256, 256>>>(d_inout, N);
-    CHECK_CUDA(cudaDeviceSynchronize());
+    // Check for errors
+    CHECK_CUDA(cudaGetLastError());
 
-    CHECK_CUDA(cudaMemcpy(inout->buf, d_inout, N * sizeof(half), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaFree(d_inout));
+    // Synchronize stream to ensure the kernel has completed
+    CHECK_CUDA(cudaStreamSynchronize(stream));
 }
-

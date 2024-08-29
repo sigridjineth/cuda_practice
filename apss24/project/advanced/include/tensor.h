@@ -25,6 +25,8 @@ struct Tensor {
     size_t num_elem();
     void to_device();
     void to_host();
+    void to_device_async(cudaStream_t stream);
+    void to_host_async(cudaStream_t stream);
 };
 
 typedef Tensor Parameter;
