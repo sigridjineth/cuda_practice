@@ -2,6 +2,23 @@
 #include "layer.h"
 #include <cuda_runtime.h>
 
+// 파라미터 변수 정의
+Parameter *mlp1_w, *mlp1_b;
+Parameter *mlp2_w, *mlp2_b;
+Parameter *convtrans1_w, *convtrans1_b;
+Parameter *batchnorm1_w, *batchnorm1_b;
+Parameter *convtrans2_w, *convtrans2_b;
+Parameter *batchnorm2_w, *batchnorm2_b;
+Parameter *convtrans3_w, *convtrans3_b;
+Parameter *batchnorm3_w, *batchnorm3_b;
+Parameter *convtrans4_w, *convtrans4_b;
+Parameter *batchnorm4_w, *batchnorm4_b;
+Parameter *convtrans5_w, *convtrans5_b;
+Parameter *batchnorm5_w, *batchnorm5_b;
+Parameter *convtrans6_w, *convtrans6_b;
+Parameter *batchnorm6_w, *batchnorm6_b;
+Parameter *conv_w, *conv_b;
+
 #define CHECK_CUDA(call)                                                 \
   do {                                                                   \
     cudaError_t status_ = call;                                          \
