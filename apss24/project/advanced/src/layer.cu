@@ -86,7 +86,7 @@ __global__ void ConvTranspose2dKernel(const half* __restrict__ in,
 
     if (k >= K || oh >= OH || ow >= OW) return;
 
-    half sum = __float2half(0.0f);
+    float sum = 0.0f;
 
     for (int c = 0; c < C; ++c) {
         for (int r = 0; r < R; ++r) {
@@ -96,16 +96,16 @@ __global__ void ConvTranspose2dKernel(const half* __restrict__ in,
                 if (h >= 0 && h < H && w >= 0 && w < W &&
                     (oh + pad - r * dilation) % stride == 0 &&
                     (ow + pad - s * dilation) % stride == 0) {
-                    half in_val = in[c * H * W + h * W + w];
-                    half weight_val = weight[k * C * R * S + c * R * S + r * S + s];
-                    sum = __hadd(sum, __hmul(in_val, weight_val));
+                    float in_val = __half2float(in[c * H * W + h * W + w]);
+                    float weight_val = __half2float(weight[c * K * R * S + k * R * S + r * S + s]);
+                    sum += in_val * weight_val;
                 }
             }
         }
     }
 
-    sum = __hadd(sum, bias[k]);
-    out[k * OH * OW + oh * OW + ow] = sum;
+    sum += __half2float(bias[k]);
+    out[k * OH * OW + oh * OW + ow] = __float2half(sum);
 }
 
 void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStream_t stream) {
