@@ -167,16 +167,17 @@ __global__ void ConvTranspose2dBatchNormLeakyReLUKernel(
 
 void ConvTranspose2dBatchNormLeakyReLU(Tensor *in, Tensor *weight, Tensor *bias,
                                        Tensor *bn_weight, Tensor *bn_bias, Tensor *out) {
+    // ConvTranspose2d, BatchNorm2d, LeakyReLU를 하나의 커널로 융합
     dim3 blockDim(8, 8, 8);
     dim3 gridDim((out->shape[3] + blockDim.x - 1) / blockDim.x,
                  (out->shape[2] + blockDim.y - 1) / blockDim.y,
                  (out->shape[1] + blockDim.z - 1) / blockDim.z);
     ConvTranspose2dBatchNormLeakyReLUKernel<<<gridDim, blockDim>>>(
-            in->buf, weight->buf, bias->buf, bn_weight->buf, bn_bias->buf, out->buf,
+            (const half*)in->buf, (const half*)weight->buf, (const half*)bias->buf,
+            (const half*)bn_weight->buf, (const half*)bn_bias->buf, (half*)out->buf,
             in->shape[0], in->shape[1], in->shape[2], in->shape[3],
             out->shape[1], weight->shape[2], weight->shape[3],
             out->shape[2], out->shape[3]);
-    CHECK_CUDA(cudaGetLastError());
 }
 
 /* ConvTranspose2d
