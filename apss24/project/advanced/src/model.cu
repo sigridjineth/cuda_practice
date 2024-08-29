@@ -159,23 +159,23 @@ Activation *convtrans5_a, *batchnorm5_a;
 Activation *convtrans6_a, *batchnorm6_a;
 Activation *conv_a;
 
-void alloc_activations() {
-    linear1_a = new Activation({1, 16384});
-    linear2_a = new Activation({1, 4096});
-    reshape_a = new Activation({1, 1024, 2, 2});
-    convtrans1_a = new Activation({1, 512, 4, 4});
-    batchnorm1_a = new Activation({1, 512, 4, 4});
-    convtrans2_a = new Activation({1, 256, 8, 8});
-    batchnorm2_a = new Activation({1, 256, 8, 8});
-    convtrans3_a = new Activation({1, 128, 16, 16});
-    batchnorm3_a = new Activation({1, 128, 16, 16});
-    convtrans4_a = new Activation({1, 64, 32, 32});
-    batchnorm4_a = new Activation({1, 64, 32, 32});
-    convtrans5_a = new Activation({1, 32, 64, 64});
-    batchnorm5_a = new Activation({1, 32, 64, 64});
-    convtrans6_a = new Activation({1, 32, 128, 128});
-    batchnorm6_a = new Activation({1, 32, 128, 128});
-    conv_a = new Activation({1, 3, 128, 128});
+void alloc_activations(size_t batch_size) {
+    linear1_a = new Activation({batch_size, 16384});
+    linear2_a = new Activation({batch_size, 4096});
+    reshape_a = new Activation({batch_size, 1024, 2, 2});
+    convtrans1_a = new Activation({batch_size, 512, 4, 4});
+    batchnorm1_a = new Activation({batch_size, 512, 4, 4});
+    convtrans2_a = new Activation({batch_size, 256, 8, 8});
+    batchnorm2_a = new Activation({batch_size, 256, 8, 8});
+    convtrans3_a = new Activation({batch_size, 128, 16, 16});
+    batchnorm3_a = new Activation({batch_size, 128, 16, 16});
+    convtrans4_a = new Activation({batch_size, 64, 32, 32});
+    batchnorm4_a = new Activation({batch_size, 64, 32, 32});
+    convtrans5_a = new Activation({batch_size, 32, 64, 64});
+    batchnorm5_a = new Activation({batch_size, 32, 64, 64});
+    convtrans6_a = new Activation({batch_size, 32, 128, 128});
+    batchnorm6_a = new Activation({batch_size, 32, 128, 128});
+    conv_a = new Activation({batch_size, 3, 128, 128});
 }
 
 void free_activations() {
@@ -201,54 +201,69 @@ void generate_images(half_cpu *input, half_cpu *output, size_t n_img) {
     cudaStream_t stream;
     CHECK_CUDA(cudaStreamCreate(&stream));
 
-    // 입력 텐서 생성
-    Tensor *z = new Tensor({n_img, LATENT_DIM}, input);
-    z->to_device_async(stream);
+    const size_t BATCH_SIZE = 32;  // 배치 크기 설정
+    const size_t num_batches = (n_img + BATCH_SIZE - 1) / BATCH_SIZE;
 
-    // 계산 시작
-    Linear(z, mlp1_w, mlp1_b, linear1_a, stream);
-    Linear(linear1_a, mlp2_w, mlp2_b, linear2_a, stream);
-    Reshape(linear2_a, reshape_a, stream);
+    // 배치 크기에 맞춰 Activation 할당
+    alloc_activations(BATCH_SIZE);
 
-    ConvTranspose2d(reshape_a, convtrans1_w, convtrans1_b, convtrans1_a, stream);
-    BatchNorm2d(convtrans1_a, batchnorm1_w, batchnorm1_b, batchnorm1_a, stream);
-    LeakyReLU(batchnorm1_a, stream);
+    for (size_t batch = 0; batch < num_batches; ++batch) {
+        size_t current_batch_size = (batch == num_batches - 1) ? (n_img - batch * BATCH_SIZE) : BATCH_SIZE;
 
-    ConvTranspose2d(batchnorm1_a, convtrans2_w, convtrans2_b, convtrans2_a, stream);
-    BatchNorm2d(convtrans2_a, batchnorm2_w, batchnorm2_b, batchnorm2_a, stream);
-    LeakyReLU(batchnorm2_a, stream);
+        // 입력 텐서 생성
+        Tensor *z = new Tensor({current_batch_size, LATENT_DIM}, input + batch * BATCH_SIZE * LATENT_DIM);
+        z->to_device_async(stream);
 
-    ConvTranspose2d(batchnorm2_a, convtrans3_w, convtrans3_b, convtrans3_a, stream);
-    BatchNorm2d(convtrans3_a, batchnorm3_w, batchnorm3_b, batchnorm3_a, stream);
-    LeakyReLU(batchnorm3_a, stream);
+        // 계산 시작
+        Linear(z, mlp1_w, mlp1_b, linear1_a, stream);
+        Linear(linear1_a, mlp2_w, mlp2_b, linear2_a, stream);
+        Reshape(linear2_a, reshape_a, stream);
 
-    ConvTranspose2d(batchnorm3_a, convtrans4_w, convtrans4_b, convtrans4_a, stream);
-    BatchNorm2d(convtrans4_a, batchnorm4_w, batchnorm4_b, batchnorm4_a, stream);
-    LeakyReLU(batchnorm4_a, stream);
+        ConvTranspose2d(reshape_a, convtrans1_w, convtrans1_b, convtrans1_a, stream);
+        BatchNorm2d(convtrans1_a, batchnorm1_w, batchnorm1_b, batchnorm1_a, stream);
+        LeakyReLU(batchnorm1_a, stream);
 
-    ConvTranspose2d(batchnorm4_a, convtrans5_w, convtrans5_b, convtrans5_a, stream);
-    BatchNorm2d(convtrans5_a, batchnorm5_w, batchnorm5_b, batchnorm5_a, stream);
-    LeakyReLU(batchnorm5_a, stream);
+        ConvTranspose2d(batchnorm1_a, convtrans2_w, convtrans2_b, convtrans2_a, stream);
+        BatchNorm2d(convtrans2_a, batchnorm2_w, batchnorm2_b, batchnorm2_a, stream);
+        LeakyReLU(batchnorm2_a, stream);
 
-    ConvTranspose2d(batchnorm5_a, convtrans6_w, convtrans6_b, convtrans6_a, stream);
-    BatchNorm2d(convtrans6_a, batchnorm6_w, batchnorm6_b, batchnorm6_a, stream);
-    LeakyReLU(batchnorm6_a, stream);
+        ConvTranspose2d(batchnorm2_a, convtrans3_w, convtrans3_b, convtrans3_a, stream);
+        BatchNorm2d(convtrans3_a, batchnorm3_w, batchnorm3_b, batchnorm3_a, stream);
+        LeakyReLU(batchnorm3_a, stream);
 
-    Conv2d(batchnorm6_a, conv_w, conv_b, conv_a, stream);
-    Tanh(conv_a, stream);
+        ConvTranspose2d(batchnorm3_a, convtrans4_w, convtrans4_b, convtrans4_a, stream);
+        BatchNorm2d(convtrans4_a, batchnorm4_w, batchnorm4_b, batchnorm4_a, stream);
+        LeakyReLU(batchnorm4_a, stream);
 
-    // 결과를 비동기적으로 호스트로 전송
-    conv_a->to_host_async(stream);
+        ConvTranspose2d(batchnorm4_a, convtrans5_w, convtrans5_b, convtrans5_a, stream);
+        BatchNorm2d(convtrans5_a, batchnorm5_w, batchnorm5_b, batchnorm5_a, stream);
+        LeakyReLU(batchnorm5_a, stream);
 
-    // 스트림 동기화
-    CHECK_CUDA(cudaStreamSynchronize(stream));
+        ConvTranspose2d(batchnorm5_a, convtrans6_w, convtrans6_b, convtrans6_a, stream);
+        BatchNorm2d(convtrans6_a, batchnorm6_w, batchnorm6_b, batchnorm6_a, stream);
+        LeakyReLU(batchnorm6_a, stream);
 
-    // 결과를 출력 버퍼로 복사
-    memcpy(output, conv_a->buf, n_img * 3 * 128 * 128 * sizeof(half_cpu));
+        Conv2d(batchnorm6_a, conv_w, conv_b, conv_a, stream);
+        Tanh(conv_a, stream);
+
+        // 결과를 비동기적으로 호스트로 전송
+        conv_a->to_host_async(stream);
+
+        // 스트림 동기화
+        CHECK_CUDA(cudaStreamSynchronize(stream));
+
+        // 결과를 출력 버퍼로 복사
+        size_t output_offset = batch * BATCH_SIZE * 3 * 128 * 128;
+        size_t copy_size = current_batch_size * 3 * 128 * 128 * sizeof(half_cpu);
+        memcpy(output + output_offset, conv_a->buf, copy_size);
+
+        // 임시 텐서 메모리 해제
+        delete z;
+    }
 
     // CUDA 스트림 정리
     CHECK_CUDA(cudaStreamDestroy(stream));
 
-    // 임시 텐서 메모리 해제
-    delete z;
+    // Activation 메모리 해제
+    free_activations();
 }
