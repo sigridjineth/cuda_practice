@@ -72,23 +72,44 @@ void Linear(Tensor *in, Tensor *w, Tensor *b, Tensor *out) {
  * 'H' is the height of the output tensor.
  * 'W' is the width of the output tensor.
  */
-void Reshape(Tensor *in, Tensor *out) {
-  size_t N = in->shape[0];
-  size_t D = in->shape[1];
-  size_t C = out->shape[1];
-  size_t H = out->shape[2];
-  size_t W = out->shape[3];
-
-  for (size_t n = 0; n < N; n++) {
-    for (size_t c = 0; c < C; c++) {
-      for (size_t h = 0; h < H; h++) {
-        for (size_t w = 0; w < W; w++) {
-          out->buf[n * C * H * W + c * H * W + h * W + w] =
-              in->buf[n * D + c * H * W + h * W + w];
-        }
-      }
+__global__ void ReshapeKernel(half *in, half *out,
+                              size_t N, size_t D, size_t C, size_t H, size_t W) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < N * C * H * W) {
+        size_t n = idx / (C * H * W);
+        size_t chw = idx % (C * H * W);
+        out[idx] = in[n * D + chw];
     }
-  }
+}
+
+void Reshape(Tensor *in, Tensor *out) {
+    size_t N = in->shape[0];
+    size_t D = in->shape[1];
+    size_t C = out->shape[1];
+    size_t H = out->shape[2];
+    size_t W = out->shape[3];
+
+    half *d_in, *d_out;
+
+    // Allocate device memory
+    CHECK_CUDA(cudaMalloc(&d_in, N * D * sizeof(half)));
+    CHECK_CUDA(cudaMalloc(&d_out, N * C * H * W * sizeof(half)));
+
+    // Copy data to device
+    CHECK_CUDA(cudaMemcpy(d_in, in->buf, N * D * sizeof(half), cudaMemcpyHostToDevice));
+
+    // Launch kernel
+    int totalThreads = N * C * H * W;
+    int blockSize = 256;
+    int numBlocks = (totalThreads + blockSize - 1) / blockSize;
+    ReshapeKernel<<<numBlocks, blockSize>>>(d_in, d_out, N, D, C, H, W);
+
+    // Copy result back to host
+    CHECK_CUDA(cudaMemcpy(out->buf, d_out, N * C * H * W * sizeof(half), cudaMemcpyDeviceToHost));
+
+    // Free device memory
+    CHECK_CUDA(cudaFree(d_in));
+    CHECK_CUDA(cudaFree(d_out));
 }
 
 /* ConvTranspose2d
