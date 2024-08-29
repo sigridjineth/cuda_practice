@@ -292,7 +292,7 @@ __global__ void Tanh_kernel(half *inout, size_t N) {
  * @param [in & out] inout: [N]
  * 'N' is the number of elements in the tensor.
  */
-void Tanh(Tensor *inout) {
+void Tanh(Tensor *inout, cudaStream_t stream) {
     size_t N = inout->num_elem();
 
     // Kernel launch configuration
