@@ -1,3 +1,4 @@
+// layer.h
 #pragma once
 
 #include "tensor.h"
@@ -23,3 +24,6 @@ void BatchNorm2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStre
 /* CUDA stream management */
 void initializeCUDA();
 void finalizeCUDA();
+
+/* Utility functions */
+__inline__ __device__ float warp_reduce(float val);

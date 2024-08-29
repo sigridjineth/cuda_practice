@@ -17,15 +17,37 @@
  */
 __global__ void LinearKernel(half *in, half *w, half *b, half *out,
                              size_t M, size_t N, size_t K) {
-    int m = blockIdx.y * blockDim.y + threadIdx.y;
-    int n = blockIdx.x * blockDim.x + threadIdx.x;
+    __shared__ half weights[16][16];
+    __shared__ half input[16];
 
-    if (m < M && n < N) {
-        half sum = __float2half(0.0f);
-        for (size_t k = 0; k < K; k++) {
-            sum = __hadd(sum, __hmul(in[m * K + k], w[n * K + k]));
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int bx = blockIdx.x;
+    int by = blockIdx.y;
+
+    half sum = __float2half(0.0f);
+    for (int i = 0; i < K; i += 16) {
+        if (i + tx < K && by * 16 + ty < M) {
+            input[tx] = in[(by * 16 + ty) * K + i + tx];
+        } else {
+            input[tx] = __float2half(0.0f);
         }
-        out[m * N + n] = __hadd(sum, b[n]);
+
+        if (i + ty < K && bx * 16 + tx < N) {
+            weights[tx][ty] = w[(bx * 16 + tx) * K + i + ty];
+        }
+
+        __syncthreads();
+
+        for (int j = 0; j < 16; j++) {
+            sum = __hadd(sum, __hmul(input[j], weights[tx][j]));
+        }
+
+        __syncthreads();
+    }
+
+    if (by * 16 + ty < M && bx * 16 + tx < N) {
+        out[(by * 16 + ty) * N + bx * 16 + tx] = __hadd(sum, b[bx * 16 + tx]);
     }
 }
 
@@ -82,30 +104,50 @@ __global__ void ConvTranspose2dKernel(const half* __restrict__ in,
                                       int N, int C, int H, int W,
                                       int K, int R, int S, int OH, int OW,
                                       int stride, int pad, int dilation) {
+    extern __shared__ half shmem[];
+    half *weight_tile = shmem;
+    half *input_tile = &shmem[K * R * S];
+
     int k = blockIdx.x * blockDim.x + threadIdx.x;
     int oh = blockIdx.y * blockDim.y + threadIdx.y;
     int ow = blockIdx.z * blockDim.z + threadIdx.z;
+
     if (k >= K || oh >= OH || ow >= OW) return;
+
     float sum = 0.0f;
-    for (int c = 0; c < C; ++c) {
-        for (int r = 0; r < R; ++r) {
-            int h = (oh + pad - r * dilation) / stride;
-            int w = (ow + pad) / stride;
-            if (h >= 0 && h < H &&
-                (oh + pad - r * dilation) % stride == 0) {
-#pragma unroll 4
-                for (int s = 0; s < S; ++s) {
-                    if (w >= 0 && w < W &&
-                        (ow + pad - s * dilation) % stride == 0) {
-                        float in_val = __half2float(in[c * H * W + h * W + w]);
-                        float weight_val = __half2float(weight[c * K * R * S + k * R * S + r * S + s]);
-                        sum += in_val * weight_val;
-                    }
-                    w = (ow + pad - (s + 1) * dilation) / stride;
-                }
+
+    // Load weight tile into shared memory
+    for (int i = 0; i < K * R * S; i += blockDim.x) {
+        int weight_idx = k * R * S + i + threadIdx.x;
+        if (weight_idx < K * R * S) {
+            weight_tile[i + threadIdx.x] = weight[weight_idx];
+        }
+    }
+
+    // Load input tile into shared memory
+    for (int i = 0; i < C; i += blockDim.y) {
+        for (int j = 0; j < R * S; j += blockDim.x) {
+            int input_idx = (i + threadIdx.y) * H * W + (oh * stride - pad + (j / S) * dilation) * W + ow * stride - pad + (j % S) * dilation;
+            if (i + threadIdx.y < C && input_idx >= 0 && input_idx < H * W) {
+                input_tile[(i + threadIdx.y) * R * S + j + threadIdx.x] = in[(i + threadIdx.y) * H * W + input_idx];
+            } else {
+                input_tile[(i + threadIdx.y) * R * S + j + threadIdx.x] = __float2half(0.0f);
             }
         }
     }
+
+    __syncthreads();
+
+    for (int c = 0; c < C; ++c) {
+        for (int r = 0; r < R; ++r) {
+            for (int s = 0; s < S; ++s) {
+                float in_val = __half2float(input_tile[c * R * S + r * S + s]);
+                float weight_val = __half2float(weight_tile[k * R * S + r * S + s]);
+                sum += in_val * weight_val;
+            }
+        }
+    }
+
     sum += __half2float(bias[k]);
     out[k * OH * OW + oh * OW + ow] = __float2half(sum);
 }
@@ -126,12 +168,14 @@ void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cuda
     const size_t pad = 1;
     const size_t dilation = 1;
 
-    dim3 blockDim(8, 8, 8);
+    int shared_mem_size = (K * R * S + C * R * S) * sizeof(half);
+
+    dim3 blockDim(16, 8, 8);
     dim3 gridDim((K + blockDim.x - 1) / blockDim.x,
                  (OH + blockDim.y - 1) / blockDim.y,
                  (OW + blockDim.z - 1) / blockDim.z);
 
-    ConvTranspose2dKernel<<<gridDim, blockDim, 0, stream>>>(
+    ConvTranspose2dKernel<<<gridDim, blockDim, shared_mem_size, stream>>>(
             in->d_buf, weight->d_buf, bias->d_buf, out->d_buf,
             N, C, H, W, K, R, S, OH, OW,
             stride, pad, dilation);
@@ -151,46 +195,28 @@ __global__ void BatchNorm2d_kernel(half *in, half *weight, half *bias, half *out
     size_t stride = blockDim.x;
     size_t HW = H * W;
 
-    __shared__ float mean;
-    __shared__ float var;
+    __shared__ float mean_sum, var_sum;
+    __shared__ float mean, var;
 
-    // Step 1: Calculate mean
-    float sum = 0.0f;
+    float thread_sum = 0.0f;
+    float thread_var_sum = 0.0f;
+
     for (size_t i = tid; i < HW; i += stride) {
-        sum += __half2float(in[c * HW + i]);
+        float val = __half2float(in[c * HW + i]);
+        thread_sum += val;
+        thread_var_sum += val * val;
     }
 
-    __shared__ float block_sum;
-    block_sum = 0.0f;
-    __syncthreads();
-
-    atomicAdd(&block_sum, sum);
-    __syncthreads();
+    mean_sum = warp_reduce(thread_sum);
+    var_sum = warp_reduce(thread_var_sum);
 
     if (tid == 0) {
-        mean = block_sum / (float)HW;
-    }
-    __syncthreads();
-
-    // Step 2: Calculate variance
-    float var_sum = 0.0f;
-    for (size_t i = tid; i < HW; i += stride) {
-        float diff = __half2float(in[c * HW + i]) - mean;
-        var_sum += diff * diff;
+        mean = mean_sum / (float)HW;
+        var = var_sum / (float)HW - mean * mean;
     }
 
-    block_sum = 0.0f;
     __syncthreads();
 
-    atomicAdd(&block_sum, var_sum);
-    __syncthreads();
-
-    if (tid == 0) {
-        var = block_sum / (float)HW;
-    }
-    __syncthreads();
-
-    // Step 3: Normalize and scale
     float w = __half2float(weight[c]);
     float b = __half2float(bias[c]);
     float invstd = rsqrtf(var + eps);
@@ -201,14 +227,21 @@ __global__ void BatchNorm2d_kernel(half *in, half *weight, half *bias, half *out
     }
 }
 
+__inline__ __device__ float warp_reduce(float val) {
+    for (int offset = warpSize / 2; offset > 0; offset /= 2) {
+        val += __shfl_down_sync(0xffffffff, val, offset);
+    }
+    return val;
+}
+
 void BatchNorm2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStream_t stream) {
     size_t N = in->shape[0];
     size_t C = in->shape[1];
     size_t H = in->shape[2];
     size_t W = in->shape[3];
 
-    dim3 grid(C);  // One block per channel
-    dim3 block(256);  // Adjust this based on your GPU capabilities
+    dim3 grid(C);
+    dim3 block(256);
     BatchNorm2d_kernel<<<grid, block, 0, stream>>>(in->d_buf, weight->d_buf, bias->d_buf, out->d_buf, N, C, H, W);
 }
 
@@ -218,8 +251,10 @@ void BatchNorm2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStre
  */
 __global__ void LeakyReLU_kernel(half *inout, size_t N, half alpha) {
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < N) {
-        if (inout[idx] < half(0)) { inout[idx] *= alpha; }
+    size_t stride = blockDim.x * gridDim.x;
+
+    for (size_t i = idx; i < N; i += stride) {
+        inout[i] = (inout[i] < half(0)) ? __hmul(inout[i], alpha) : inout[i];
     }
 }
 
@@ -231,7 +266,9 @@ void LeakyReLU(Tensor *inout, cudaStream_t stream) {
     size_t N = inout->num_elem();
     const half alpha = 0.01;
 
-    LeakyReLU_kernel<<<(N + 255) / 256, 256, 0, stream>>>(inout->d_buf, N, alpha);
+    int blockSize = 256;
+    int numBlocks = (N + blockSize - 1) / blockSize;
+    LeakyReLU_kernel<<<numBlocks, blockSize, 0, stream>>>(inout->d_buf, N, alpha);
 }
 
 /* Conv2d
