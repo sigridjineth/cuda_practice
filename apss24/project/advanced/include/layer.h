@@ -17,6 +17,12 @@ void Reshape(Tensor *in, Tensor *out, cudaStream_t stream);
 void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStream_t stream);
 void Conv2d(Tensor *in, Tensor *w, Tensor *b, Tensor *out, cudaStream_t stream);
 
+/* Fused Convolutional operations */
+void FusedConvTranspose2dBatchNormLeakyReLU(
+        Tensor *in, Tensor *weight, Tensor *bias,
+        Tensor *bn_weight, Tensor *bn_bias, Tensor *out,
+        float eps, float leaky_alpha, cudaStream_t stream);
+
 /* Other operations */
 void BatchNorm2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStream_t stream);
 

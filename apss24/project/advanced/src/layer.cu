@@ -11,6 +11,100 @@
     }                                                                    \
   } while (0)
 
+// Fused ConvTranspose2d + BatchNorm2d + LeakyReLU kernel
+__global__ void FusedConvTranspose2dBatchNormLeakyReLUKernel(
+        const half* __restrict__ in, const half* __restrict__ weight,
+        const half* __restrict__ bias, const half* __restrict__ bn_weight,
+        const half* __restrict__ bn_bias, half* __restrict__ out,
+        int N, int C, int H, int W, int K, int R, int S, int OH, int OW,
+        int stride, int pad, int dilation, float eps, float leaky_alpha) {
+
+    extern __shared__ half shared_mem[];
+    half* shared_weight = shared_mem;
+
+    int oh = blockIdx.y * blockDim.y + threadIdx.y;
+    int ow = blockIdx.z * blockDim.z + threadIdx.z;
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (oh >= OH || ow >= OW || k >= K) return;
+
+    float sum = 0.0f;
+
+    for (int c = 0; c < C; ++c) {
+        // Load weight to shared memory
+        for (int r = 0; r < R; ++r) {
+            for (int s = 0; s < S; ++s) {
+                int weight_idx = (c * K * R * S + k * R * S + r * S + s);
+                shared_weight[threadIdx.x * R * S + r * S + s] = weight[weight_idx];
+            }
+        }
+        __syncthreads();
+
+        for (int r = 0; r < R; ++r) {
+            for (int s = 0; s < S; ++s) {
+                int h = (oh + pad - r * dilation) / stride;
+                int w = (ow + pad - s * dilation) / stride;
+                if (h >= 0 && h < H && w >= 0 && w < W &&
+                    (oh + pad - r * dilation) % stride == 0 &&
+                    (ow + pad - s * dilation) % stride == 0) {
+                    float in_val = __half2float(in[c * H * W + h * W + w]);
+                    float weight_val = __half2float(shared_weight[threadIdx.x * R * S + r * S + s]);
+                    sum += in_val * weight_val;
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    // Apply bias
+    sum += __half2float(bias[k]);
+
+    // BatchNorm
+    float bn_scale = __half2float(bn_weight[k]);
+    float bn_shift = __half2float(bn_bias[k]);
+    float normalized = bn_scale * sum + bn_shift;
+
+    // LeakyReLU
+    if (normalized < 0) {
+        normalized *= leaky_alpha;
+    }
+
+    out[k * OH * OW + oh * OW + ow] = __float2half(normalized);
+}
+
+void FusedConvTranspose2dBatchNormLeakyReLU(
+        Tensor *in, Tensor *weight, Tensor *bias,
+        Tensor *bn_weight, Tensor *bn_bias, Tensor *out,
+        float eps, float leaky_alpha, cudaStream_t stream) {
+
+    size_t N = in->shape[0];
+    size_t C = in->shape[1];
+    size_t H = in->shape[2];
+    size_t W = in->shape[3];
+    size_t K = weight->shape[1];
+    size_t R = weight->shape[2];
+    size_t S = weight->shape[3];
+    size_t OH = out->shape[2];
+    size_t OW = out->shape[3];
+
+    const size_t stride = 2;
+    const size_t pad = 1;
+    const size_t dilation = 1;
+
+    dim3 blockDim(8, 8, 8);
+    dim3 gridDim((K + blockDim.x - 1) / blockDim.x,
+                 (OH + blockDim.y - 1) / blockDim.y,
+                 (OW + blockDim.z - 1) / blockDim.z);
+
+    size_t shared_mem_size = blockDim.x * R * S * sizeof(half);
+
+    FusedConvTranspose2dBatchNormLeakyReLUKernel<<<gridDim, blockDim, shared_mem_size, stream>>>(
+            in->d_buf, weight->d_buf, bias->d_buf,
+            bn_weight->d_buf, bn_bias->d_buf, out->d_buf,
+            N, C, H, W, K, R, S, OH, OW,
+            stride, pad, dilation, eps, leaky_alpha);
+}
+
 /* Linear
  * GPU 병렬화: 각 출력 요소를 병렬로 계산합니다.
  * half 정밀도 활용: GPU의 native half 타입을 사용하여 연산 속도를 향상시킵니다.
