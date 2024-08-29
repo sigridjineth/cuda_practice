@@ -11,7 +11,7 @@
 
 #include "model.h"
 
-static size_t num_images = 1;
+static size_t num_images = 2;
 static size_t num_elems_per_image = (3 * 128 * 128);
 static bool run_validation = false;
 
