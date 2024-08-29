@@ -1,0 +1,11 @@
+# model files
+model/
+
+# outputs
+main
+obj/
+
+# data files
+data/output*
+data/answer*
+data/latent*
