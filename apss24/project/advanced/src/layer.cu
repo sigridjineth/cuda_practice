@@ -79,30 +79,29 @@ __global__ void ConvTranspose2dKernel(const half* __restrict__ in,
                                       int N, int C, int H, int W,
                                       int K, int R, int S, int OH, int OW,
                                       int stride, int pad, int dilation) {
-    int oc = blockIdx.x * blockDim.x + threadIdx.x;
+    int oc = blockIdx.x;
     int oh = blockIdx.y * blockDim.y + threadIdx.y;
     int ow = blockIdx.z * blockDim.z + threadIdx.z;
 
-    if (oc < K && oh < OH && ow < OW) {
-        float sum = 0.0f;
-        for (int c = 0; c < C; ++c) {
-            for (int r = 0; r < R; ++r) {
-                for (int s = 0; s < S; ++s) {
-                    int h = (oh + pad - r * dilation) / stride;
-                    int w = (ow + pad - s * dilation) / stride;
-                    if (h >= 0 && h < H && w >= 0 && w < W &&
-                        (oh + pad - r * dilation) % stride == 0 &&
-                        (ow + pad - s * dilation) % stride == 0) {
-                        float in_val = __half2float(in[c * H * W + h * W + w]);
-                        float weight_val = __half2float(weight[oc * C * R * S + c * R * S + r * S + s]);
-                        sum += in_val * weight_val;
-                    }
-                }
+    if (oh >= OH || ow >= OW) return;
+
+    half sum = __float2half(0.0f);
+    for (int c = 0; c < C; ++c) {
+        for (int r = 0; r < R; ++r) {
+            for (int s = 0; s < S; ++s) {
+                int h = (oh + pad - r * dilation) / stride;
+                int w = (ow + pad - s * dilation) / stride;
+                if (h < 0 || h >= H || w < 0 || w >= W) continue;
+                if ((oh + pad - r * dilation) % stride != 0) continue;
+                if ((ow + pad - s * dilation) % stride != 0) continue;
+
+                half in_val = in[c * H * W + h * W + w];
+                half weight_val = weight[c * K * R * S + oc * R * S + r * S + s];
+                sum = __hadd(sum, __hmul(in_val, weight_val));
             }
         }
-        sum += __half2float(bias[oc]);
-        out[oc * OH * OW + oh * OW + ow] = __float2half(sum);
     }
+    out[oc * OH * OW + oh * OW + ow] = __hadd(sum, bias[oc]);
 }
 
 void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStream_t stream) {
@@ -120,11 +119,8 @@ void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cuda
     const size_t pad = 1;
     const size_t dilation = 1;
 
-    dim3 blockDim(8, 8, 8);
-    dim3 gridDim((K + blockDim.x - 1) / blockDim.x,
-                 (OH + blockDim.y - 1) / blockDim.y,
-                 (OW + blockDim.z - 1) / blockDim.z);
-
+    dim3 blockDim(1, 16, 16);
+    dim3 gridDim(K, (OH + blockDim.y - 1) / blockDim.y, (OW + blockDim.z - 1) / blockDim.z);
     ConvTranspose2dKernel<<<gridDim, blockDim, 0, stream>>>(
             in->d_buf, weight->d_buf, bias->d_buf, out->d_buf,
             N, C, H, W, K, R, S, OH, OW,
