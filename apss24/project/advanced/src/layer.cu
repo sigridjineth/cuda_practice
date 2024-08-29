@@ -416,15 +416,33 @@ void Conv2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out) {
   }
 }
 
-/* Tanh 
+/* Tanh GPU kernel
+ * @param [in & out] inout: [N]
+ * 'N' is the number of elements in the tensor.
+ */
+__global__ void Tanh_kernel(half *inout, size_t N) {
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < N) {
+        inout[idx] = __float2half(tanhf(__half2float(inout[idx])));
+    }
+}
+
+/* Tanh using CUDA GPU
  * @param [in & out] inout: [N]
  * 'N' is the number of elements in the tensor.
  */
 void Tanh(Tensor *inout) {
-  size_t N = inout->num_elem();
+    size_t N = inout->num_elem();
 
-  for (size_t i = 0; i < N; i++) {
-    inout->buf[i] = tanh(inout->buf[i]);
-  }
+    half *d_inout;
+
+    CHECK_CUDA(cudaMalloc(&d_inout, N * sizeof(half)));
+    CHECK_CUDA(cudaMemcpy(d_inout, inout->buf, N * sizeof(half), cudaMemcpyHostToDevice));
+
+    Tanh_kernel<<<(N + 255) / 256, 256>>>(d_inout, N);
+    CHECK_CUDA(cudaDeviceSynchronize());
+
+    CHECK_CUDA(cudaMemcpy(inout->buf, d_inout, N * sizeof(half), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaFree(d_inout));
 }
 
