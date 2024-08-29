@@ -22,6 +22,7 @@ __global__ void LinearKernel(half *in, half *w, half *b, half *out,
 
     if (m < M && n < N) {
         half sum = __float2half(0.0f);
+#pragma unroll
         for (size_t k = 0; k < K; k++) {
             sum = __hadd(sum, __hmul(in[m * K + k], w[n * K + k]));
         }
@@ -87,7 +88,9 @@ __global__ void ConvTranspose2dKernel(const half* __restrict__ in,
     int ow = blockIdx.z * blockDim.z + threadIdx.z;
     if (k >= K || oh >= OH || ow >= OW) return;
     float sum = 0.0f;
+#pragma unroll
     for (int c = 0; c < C; ++c) {
+#pragma unroll
         for (int r = 0; r < R; ++r) {
             int h = (oh + pad - r * dilation) / stride;
             int w = (ow + pad) / stride;
@@ -156,6 +159,7 @@ __global__ void BatchNorm2d_kernel(half *in, half *weight, half *bias, half *out
 
     // Step 1: Calculate mean
     float sum = 0.0f;
+#pragma unroll
     for (size_t i = tid; i < HW; i += stride) {
         sum += __half2float(in[c * HW + i]);
     }
@@ -174,6 +178,7 @@ __global__ void BatchNorm2d_kernel(half *in, half *weight, half *bias, half *out
 
     // Step 2: Calculate variance
     float var_sum = 0.0f;
+#pragma unroll
     for (size_t i = tid; i < HW; i += stride) {
         float diff = __half2float(in[c * HW + i]) - mean;
         var_sum += diff * diff;
@@ -194,7 +199,7 @@ __global__ void BatchNorm2d_kernel(half *in, half *weight, half *bias, half *out
     float w = __half2float(weight[c]);
     float b = __half2float(bias[c]);
     float invstd = rsqrtf(var + eps);
-
+#pragma unroll
     for (size_t i = tid; i < HW; i += stride) {
         float normalized = (__half2float(in[c * HW + i]) - mean) * invstd;
         out[c * HW + i] = __float2half(w * normalized + b);
@@ -254,7 +259,9 @@ __global__ void Conv2d_kernel(half *in, half *weight, half *bias, half *out,
     int ow = ow_block * blockDim.y + threadIdx.y;
     if (oh < OH && ow < OW) {
         half sum = bias[k];
+#pragma unroll
         for (int c = 0; c < C; c++) {
+#pragma unroll
             for (int r = 0; r < R; r++) {
                 int h = oh * stride - pad + r * dilation;
                 int w = ow * stride - pad;
