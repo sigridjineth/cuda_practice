@@ -12,25 +12,55 @@
   } while (0)
 
 /* Linear
- * @param [in1]  in: [M, K]
- * @param [in2]   w: [N, K]
- * @param [in3]   b: [N]
- * @param [out] out: [M, N]
+ * GPU 병렬화: 각 출력 요소를 병렬로 계산합니다.
+ * half 정밀도 활용: GPU의 native half 타입을 사용하여 연산 속도를 향상시킵니다.
  */
-void Linear(Tensor *in, Tensor *w, Tensor *b, Tensor *out) {
-  size_t M = out->shape[0];
-  size_t N = out->shape[1];
-  size_t K = w->shape[1];
+__global__ void LinearKernel(half *in, half *w, half *b, half *out,
+                             size_t M, size_t N, size_t K) {
+    int m = blockIdx.y * blockDim.y + threadIdx.y;
+    int n = blockIdx.x * blockDim.x + threadIdx.x;
 
-  for (size_t m = 0; m < M; m++) {
-    for (size_t n = 0; n < N; n++) {
-      out->buf[m * N + n] = 0;
-      for (size_t k = 0; k < K; k++) {
-        out->buf[m * N + n] += in->buf[m * K + k] * w->buf[n * K + k];
-      }
-      out->buf[m * N + n] += b->buf[n];
+    if (m < M && n < N) {
+        half sum = __float2half(0.0f);
+        for (size_t k = 0; k < K; k++) {
+            sum = __hadd(sum, __hmul(in[m * K + k], w[n * K + k]));
+        }
+        out[m * N + n] = __hadd(sum, b[n]);
     }
-  }
+}
+
+void Linear(Tensor *in, Tensor *w, Tensor *b, Tensor *out) {
+    size_t M = out->shape[0];
+    size_t N = out->shape[1];
+    size_t K = w->shape[1];
+
+    half *d_in, *d_w, *d_b, *d_out;
+
+    // Allocate device memory
+    CHECK_CUDA(cudaMalloc(&d_in, M * K * sizeof(half)));
+    CHECK_CUDA(cudaMalloc(&d_w, N * K * sizeof(half)));
+    CHECK_CUDA(cudaMalloc(&d_b, N * sizeof(half)));
+    CHECK_CUDA(cudaMalloc(&d_out, M * N * sizeof(half)));
+
+    // Copy data to device
+    CHECK_CUDA(cudaMemcpy(d_in, in->buf, M * K * sizeof(half), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_w, w->buf, N * K * sizeof(half), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_b, b->buf, N * sizeof(half), cudaMemcpyHostToDevice));
+
+    // Launch kernel
+    dim3 blockDim(16, 16);
+    dim3 gridDim((N + blockDim.x - 1) / blockDim.x,
+                 (M + blockDim.y - 1) / blockDim.y);
+    LinearKernel<<<gridDim, blockDim>>>(d_in, d_w, d_b, d_out, M, N, K);
+
+    // Copy result back to host
+    CHECK_CUDA(cudaMemcpy(out->buf, d_out, M * N * sizeof(half), cudaMemcpyDeviceToHost));
+
+    // Free device memory
+    CHECK_CUDA(cudaFree(d_in));
+    CHECK_CUDA(cudaFree(d_w));
+    CHECK_CUDA(cudaFree(d_b));
+    CHECK_CUDA(cudaFree(d_out));
 }
 
 /* Reshape 
