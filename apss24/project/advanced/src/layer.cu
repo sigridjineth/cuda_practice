@@ -35,7 +35,7 @@ void Linear(Tensor *in, Tensor *w, Tensor *b, Tensor *out, cudaStream_t stream) 
     size_t N = out->shape[1];
     size_t K = w->shape[1];
 
-    dim3 blockDim(16, 16);
+    dim3 blockDim(4, 4);
     dim3 gridDim((N + blockDim.x - 1) / blockDim.x,
                  (M + blockDim.y - 1) / blockDim.y);
     LinearKernel<<<gridDim, blockDim, 0, stream>>>(in->d_buf, w->d_buf, b->d_buf, out->d_buf, M, N, K);
@@ -129,7 +129,7 @@ void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cuda
     const size_t pad = 1;
     const size_t dilation = 1;
 
-    dim3 blockDim(8, 8, 8);
+    dim3 blockDim(4, 4, 4);
     dim3 gridDim((K + blockDim.x - 1) / blockDim.x,
                  (OH + blockDim.y - 1) / blockDim.y,
                  (OW + blockDim.z - 1) / blockDim.z);
