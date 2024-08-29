@@ -39,36 +39,36 @@ void generate_images(half_cpu *input, half_cpu *output, size_t n_img) {
     Tensor *conv_a = new Tensor({n_img, 3, 128, 128});
 
     // 계산 시작 (모든 연산을 GPU에서 수행)
-    Linear_cuda(z, mlp1_w, mlp1_b, linear1_a, stream);
-    Linear_cuda(linear1_a, mlp2_w, mlp2_b, linear2_a, stream);
-    Reshape_cuda(linear2_a, reshape_a, stream);
+    Linear(z, mlp1_w, mlp1_b, linear1_a, stream);
+    Linear(linear1_a, mlp2_w, mlp2_b, linear2_a, stream);
+    Reshape(linear2_a, reshape_a, stream);
 
-    ConvTranspose2d_cuda(reshape_a, convtrans1_w, convtrans1_b, convtrans1_a, stream);
-    BatchNorm2d_cuda(convtrans1_a, batchnorm1_w, batchnorm1_b, batchnorm1_a, stream);
-    LeakyReLU_cuda(batchnorm1_a, stream);
+    ConvTranspose2d(reshape_a, convtrans1_w, convtrans1_b, convtrans1_a, stream);
+    BatchNorm2d(convtrans1_a, batchnorm1_w, batchnorm1_b, batchnorm1_a, stream);
+    LeakyReLU(batchnorm1_a, stream);
 
-    ConvTranspose2d_cuda(batchnorm1_a, convtrans2_w, convtrans2_b, convtrans2_a, stream);
-    BatchNorm2d_cuda(convtrans2_a, batchnorm2_w, batchnorm2_b, batchnorm2_a, stream);
-    LeakyReLU_cuda(batchnorm2_a, stream);
+    ConvTranspose2d(batchnorm1_a, convtrans2_w, convtrans2_b, convtrans2_a, stream);
+    BatchNorm2d(convtrans2_a, batchnorm2_w, batchnorm2_b, batchnorm2_a, stream);
+    LeakyReLU(batchnorm2_a, stream);
 
-    ConvTranspose2d_cuda(batchnorm2_a, convtrans3_w, convtrans3_b, convtrans3_a, stream);
-    BatchNorm2d_cuda(convtrans3_a, batchnorm3_w, batchnorm3_b, batchnorm3_a, stream);
-    LeakyReLU_cuda(batchnorm3_a, stream);
+    ConvTranspose2d(batchnorm2_a, convtrans3_w, convtrans3_b, convtrans3_a, stream);
+    BatchNorm2d(convtrans3_a, batchnorm3_w, batchnorm3_b, batchnorm3_a, stream);
+    LeakyReLU(batchnorm3_a, stream);
 
-    ConvTranspose2d_cuda(batchnorm3_a, convtrans4_w, convtrans4_b, convtrans4_a, stream);
-    BatchNorm2d_cuda(convtrans4_a, batchnorm4_w, batchnorm4_b, batchnorm4_a, stream);
-    LeakyReLU_cuda(batchnorm4_a, stream);
+    ConvTranspose2d(batchnorm3_a, convtrans4_w, convtrans4_b, convtrans4_a, stream);
+    BatchNorm2d(convtrans4_a, batchnorm4_w, batchnorm4_b, batchnorm4_a, stream);
+    LeakyReLU(batchnorm4_a, stream);
 
-    ConvTranspose2d_cuda(batchnorm4_a, convtrans5_w, convtrans5_b, convtrans5_a, stream);
-    BatchNorm2d_cuda(convtrans5_a, batchnorm5_w, batchnorm5_b, batchnorm5_a, stream);
-    LeakyReLU_cuda(batchnorm5_a, stream);
+    ConvTranspose2d(batchnorm4_a, convtrans5_w, convtrans5_b, convtrans5_a, stream);
+    BatchNorm2d(convtrans5_a, batchnorm5_w, batchnorm5_b, batchnorm5_a, stream);
+    LeakyReLU(batchnorm5_a, stream);
 
-    ConvTranspose2d_cuda(batchnorm5_a, convtrans6_w, convtrans6_b, convtrans6_a, stream);
-    BatchNorm2d_cuda(convtrans6_a, batchnorm6_w, batchnorm6_b, batchnorm6_a, stream);
-    LeakyReLU_cuda(batchnorm6_a, stream);
+    ConvTranspose2d(batchnorm5_a, convtrans6_w, convtrans6_b, convtrans6_a, stream);
+    BatchNorm2d(convtrans6_a, batchnorm6_w, batchnorm6_b, batchnorm6_a, stream);
+    LeakyReLU(batchnorm6_a, stream);
 
-    Conv2d_cuda(batchnorm6_a, conv_w, conv_b, conv_a, stream);
-    Tanh_cuda(conv_a, stream);
+    Conv2d(batchnorm6_a, conv_w, conv_b, conv_a, stream);
+    Tanh(conv_a, stream);
 
     // 결과를 비동기적으로 호스트로 전송
     conv_a->to_host_async(stream);
