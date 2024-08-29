@@ -295,30 +295,36 @@ __global__ void Conv2d_kernel(half *in, half *weight, half *bias, half *out,
     int ow_block = blockIdx.z % ((OW + blockDim.y - 1) / blockDim.y);
     int oh = oh_block * blockDim.x + threadIdx.x;
     int ow = ow_block * blockDim.y + threadIdx.y;
-
-    if (oh < OH && ow < OW && n < N && k < K) {
+    if (oh < OH && ow < OW) {
         half sum = bias[k];
         for (int c = 0; c < C; c++) {
             for (int r = 0; r < R; r++) {
                 int h = oh * stride - pad + r * dilation;
                 int w = ow * stride - pad;
                 if (h >= 0 && h < H) {
+                    //if (S >= 4) {
+                    //if (-1) {
 #pragma unroll
-                    for (int s = 0; s < S; s++) {
-                        int input_idx = n * C * H * W + c * H * W + h * W + w;
-                        if (w >= 0 && w < W && input_idx < n * C * H * W) {
-                            sum = __hadd(sum, __hmul(in[input_idx],
+                    for (int s = 0; s < 4; s++) {
+                        if (w >= 0 && w < W) {
+                            sum = __hadd(sum, __hmul(in[n * C * H * W + c * H * W + h * W + w],
                                                      weight[k * C * R * S + c * R * S + r * S + s]));
                         }
                         w += dilation;
                     }
+                    } else {
+                         for (int s = 0; s < S; s++) {
+                             if (w >= 0 && w < W) {
+                                 sum = __hadd(sum, __hmul(in[n * C * H * W + c * H * W + h * W + w],
+                                                          weight[k * C * R * S + c * R * S + r * S + s]));
+                             }
+                             w += dilation;
+                         }
+                     }
                 }
             }
         }
-        int output_idx = n * K * OH * OW + k * OH * OW + oh * OW + ow;
-        if (output_idx < n * K * OH * OW) {
-            out[output_idx] = sum;
-        }
+        out[n * K * OH * OW + k * OH * OW + oh * OW + ow] = sum;
     }
 }
 
