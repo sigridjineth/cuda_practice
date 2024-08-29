@@ -219,47 +219,97 @@ void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out) {
  * 'H' is the height of the input tensor.
  * 'W' is the width of the input tensor.
  */
+__global__ void BatchNorm2d_kernel(half *in, half *weight, half *bias, half *out,
+                                   size_t N, size_t C, size_t H, size_t W) {
+    const float eps = 1e-5f;
+    size_t c = blockIdx.x;
+    size_t tid = threadIdx.x;
+    size_t stride = blockDim.x;
+    size_t HW = H * W;
+
+    __shared__ float mean;
+    __shared__ float var;
+
+    // Step 1: Calculate mean
+    float sum = 0.0f;
+    for (size_t i = tid; i < HW; i += stride) {
+        sum += __half2float(in[c * HW + i]);
+    }
+
+    __shared__ float block_sum;
+    block_sum = 0.0f;
+    __syncthreads();
+
+    atomicAdd(&block_sum, sum);
+    __syncthreads();
+
+    if (tid == 0) {
+        mean = block_sum / (float)HW;
+    }
+    __syncthreads();
+
+    // Step 2: Calculate variance
+    float var_sum = 0.0f;
+    for (size_t i = tid; i < HW; i += stride) {
+        float diff = __half2float(in[c * HW + i]) - mean;
+        var_sum += diff * diff;
+    }
+
+    block_sum = 0.0f;
+    __syncthreads();
+
+    atomicAdd(&block_sum, var_sum);
+    __syncthreads();
+
+    if (tid == 0) {
+        var = block_sum / (float)HW;
+    }
+    __syncthreads();
+
+    // Step 3: Normalize and scale
+    float w = __half2float(weight[c]);
+    float b = __half2float(bias[c]);
+    float invstd = rsqrtf(var + eps);
+
+    for (size_t i = tid; i < HW; i += stride) {
+        float normalized = (__half2float(in[c * HW + i]) - mean) * invstd;
+        out[c * HW + i] = __float2half(w * normalized + b);
+    }
+}
+
 void BatchNorm2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out) {
-  size_t C = in->shape[1];
-  size_t H = in->shape[2];
-  size_t W = in->shape[3];
+    size_t N = in->shape[0];
+    size_t C = in->shape[1];
+    size_t H = in->shape[2];
+    size_t W = in->shape[3];
 
-  const float eps = 1e-5f;
+    half *d_in, *d_weight, *d_bias, *d_out;
 
-  for (size_t c = 0; c < C; c++) {
-    // 1. Caculate mean for each channel
-    float mean = 0.0f;
-    float var = 0.0f;
-    for (size_t h = 0; h < H; h++) {
-      for (size_t w = 0; w < W; w++) {
-        half_cpu val = in->buf[c * H * W + h * W + w];
-        mean += static_cast<float>(val); /* Cast to float */
-      }
-    }
-    mean /= static_cast<float>(H * W);
+    // Allocate device memory
+    CHECK_CUDA(cudaMalloc(&d_in, N * C * H * W * sizeof(half)));
+    CHECK_CUDA(cudaMalloc(&d_weight, C * sizeof(half)));
+    CHECK_CUDA(cudaMalloc(&d_bias, C * sizeof(half)));
+    CHECK_CUDA(cudaMalloc(&d_out, N * C * H * W * sizeof(half)));
 
-    // 2. Caculate variance for each channel
-    for (size_t h = 0; h < H; h++) {
-      for (size_t w = 0; w < W; w++) {
-        half_cpu val = in->buf[c * H * W + h * W + w];
-        var += (static_cast<float>(val) - mean) * 
-          (static_cast<float>(val) - mean); /* Cast to float */
-      }
-    }
-    var /= static_cast<float>(H * W);
+    // Copy data to device
+    CHECK_CUDA(cudaMemcpy(d_in, in->buf, N * C * H * W * sizeof(half), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_weight, weight->buf, C * sizeof(half), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_bias, bias->buf, C * sizeof(half), cudaMemcpyHostToDevice));
 
-    // 3. Normalize with the calculated mean and variance
-    for (size_t h = 0; h < H; h++) {
-      for (size_t w = 0; w < W; w++) {
-        out->buf[c * H * W + h * W + w] =
-          weight->buf[c] * 
-          (in->buf[c * H * W + h * W + w] - 
-          half_cpu(mean)) / /* Cast to half */
-          half_cpu(sqrt(var + eps)) + /* Cast to half */
-          bias->buf[c];
-      }
-    }
-  }
+    // Launch kernel
+    dim3 grid(C);  // One block per channel
+    dim3 block(256);  // Adjust this based on your GPU capabilities
+    BatchNorm2d_kernel<<<grid, block>>>(d_in, d_weight, d_bias, d_out, N, C, H, W);
+    CHECK_CUDA(cudaGetLastError());
+
+    // Copy result back to host
+    CHECK_CUDA(cudaMemcpy(out->buf, d_out, N * C * H * W * sizeof(half), cudaMemcpyDeviceToHost));
+
+    // Free device memory
+    CHECK_CUDA(cudaFree(d_in));
+    CHECK_CUDA(cudaFree(d_weight));
+    CHECK_CUDA(cudaFree(d_bias));
+    CHECK_CUDA(cudaFree(d_out));
 }
 
 /* LeakyReLU
