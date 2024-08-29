@@ -23,7 +23,7 @@ extern Parameter *batchnorm6_w, *batchnorm6_b;
 extern Parameter *conv_w, *conv_b;
 
 void alloc_and_set_parameters(half_cpu *param, size_t param_size);
-void alloc_activations();
+void alloc_activations(size_t batch_size);
 void generate_images(half_cpu *input, half_cpu *output, size_t n_img);
 void free_parameters();
 void free_activations();
