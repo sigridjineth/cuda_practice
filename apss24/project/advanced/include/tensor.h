@@ -15,16 +15,15 @@ using namespace half_float::literal;
 struct Tensor {
     size_t ndim = 0;
     size_t shape[4];
-    half_cpu *buf = nullptr;
-    half *d_buf = nullptr;  // GPU buffer
+    half *buf = nullptr;
+    bool is_gpu = false;
 
-    Tensor(const vector<size_t> &shape_);
-    Tensor(const vector<size_t> &shape_, half_cpu *buf_);
+    Tensor(const vector<size_t> &shape_, bool gpu = true);
     ~Tensor();
 
+    void to_gpu();
+    void to_cpu();
     size_t num_elem();
-    void to_device();
-    void to_host();
 };
 
 typedef Tensor Parameter;

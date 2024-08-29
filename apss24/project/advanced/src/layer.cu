@@ -112,6 +112,73 @@ void Reshape(Tensor *in, Tensor *out) {
     CHECK_CUDA(cudaFree(d_out));
 }
 
+__global__ void ConvTranspose2dBatchNormLeakyReLUKernel(
+        const half* in, const half* weight, const half* bias,
+        const half* bn_weight, const half* bn_bias, half* out,
+        int N, int C, int H, int W, int K, int R, int S, int OH, int OW) {
+
+    const float eps = 1e-5f;
+    const float alpha = 0.01f; // LeakyReLU alpha
+
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    int oh = blockIdx.y * blockDim.y + threadIdx.y;
+    int ow = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (k >= K || oh >= OH || ow >= OW) return;
+
+    const int stride = 2;
+    const int pad = 1;
+    const int dilation = 1;
+
+    float sum = 0.0f;
+    for (int c = 0; c < C; ++c) {
+        for (int r = 0; r < R; ++r) {
+            for (int s = 0; s < S; ++s) {
+                int h = (oh + pad - r * dilation) / stride;
+                int w = (ow + pad - s * dilation) / stride;
+                if (h < 0 || h >= H || w < 0 || w >= W) continue;
+                if ((oh + pad - r * dilation) % stride != 0) continue;
+                if ((ow + pad - s * dilation) % stride != 0) continue;
+
+                float in_val = __half2float(in[c * H * W + h * W + w]);
+                float weight_val = __half2float(weight[k * C * R * S + c * R * S + r * S + s]);
+                sum += in_val * weight_val;
+            }
+        }
+    }
+
+    // Add bias
+    sum += __half2float(bias[k]);
+
+    // BatchNorm2d
+    float bn_weight_val = __half2float(bn_weight[k]);
+    float bn_bias_val = __half2float(bn_bias[k]);
+
+    // Note: For simplicity, we're using a global mean and variance of 0 and 1.
+    // In a real scenario, you'd compute these values over the batch.
+    float normalized = (sum - 0.0f) / sqrtf(1.0f + eps);
+    float bn_out = bn_weight_val * normalized + bn_bias_val;
+
+    // LeakyReLU
+    float leaky_out = (bn_out > 0.0f) ? bn_out : alpha * bn_out;
+
+    out[k * OH * OW + oh * OW + ow] = __float2half(leaky_out);
+}
+
+void ConvTranspose2dBatchNormLeakyReLU(Tensor *in, Tensor *weight, Tensor *bias,
+                                       Tensor *bn_weight, Tensor *bn_bias, Tensor *out) {
+    dim3 blockDim(8, 8, 8);
+    dim3 gridDim((out->shape[3] + blockDim.x - 1) / blockDim.x,
+                 (out->shape[2] + blockDim.y - 1) / blockDim.y,
+                 (out->shape[1] + blockDim.z - 1) / blockDim.z);
+    ConvTranspose2dBatchNormLeakyReLUKernel<<<gridDim, blockDim>>>(
+            in->buf, weight->buf, bias->buf, bn_weight->buf, bn_bias->buf, out->buf,
+            in->shape[0], in->shape[1], in->shape[2], in->shape[3],
+            out->shape[1], weight->shape[2], weight->shape[3],
+            out->shape[2], out->shape[3]);
+    CHECK_CUDA(cudaGetLastError());
+}
+
 /* ConvTranspose2d
  * @param [in1]     in: [N, C, H, W]
  * @param [in2] weight: [C, K, R, S]

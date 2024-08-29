@@ -36,3 +36,6 @@ void BatchNorm2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out);
 
 /* Example GPU kernel */
 void LeakyReLU_cuda(Tensor *inout);
+
+void ConvTranspose2dBatchNormLeakyReLU(Tensor *in, Tensor *weight, Tensor *bias,
+                                       Tensor *bn_weight, Tensor *bn_bias, Tensor *out);
