@@ -73,6 +73,8 @@ void Reshape(Tensor *in, Tensor *out, cudaStream_t stream) {
  * @param [in3]   bias: [K]
  * @param [out]    out: [N, K, OH, OW]
  */
+
+
 __global__ void ConvTranspose2dKernel(const half* __restrict__ in,
                                       const half* __restrict__ weight,
                                       const half* __restrict__ bias,
@@ -83,30 +85,31 @@ __global__ void ConvTranspose2dKernel(const half* __restrict__ in,
     int k = blockIdx.x * blockDim.x + threadIdx.x;
     int oh = blockIdx.y * blockDim.y + threadIdx.y;
     int ow = blockIdx.z * blockDim.z + threadIdx.z;
-
     if (k >= K || oh >= OH || ow >= OW) return;
-
     float sum = 0.0f;
-
     for (int c = 0; c < C; ++c) {
         for (int r = 0; r < R; ++r) {
-            for (int s = 0; s < S; ++s) {
-                int h = (oh + pad - r * dilation) / stride;
-                int w = (ow + pad - s * dilation) / stride;
-                if (h >= 0 && h < H && w >= 0 && w < W &&
-                    (oh + pad - r * dilation) % stride == 0 &&
-                    (ow + pad - s * dilation) % stride == 0) {
-                    float in_val = __half2float(in[c * H * W + h * W + w]);
-                    float weight_val = __half2float(weight[c * K * R * S + k * R * S + r * S + s]);
-                    sum += in_val * weight_val;
+            int h = (oh + pad - r * dilation) / stride;
+            int w = (ow + pad) / stride;
+            if (h >= 0 && h < H &&
+                (oh + pad - r * dilation) % stride == 0) {
+#pragma unroll 4
+                for (int s = 0; s < S; ++s) {
+                    if (w >= 0 && w < W &&
+                        (ow + pad - s * dilation) % stride == 0) {
+                        float in_val = __half2float(in[c * H * W + h * W + w]);
+                        float weight_val = __half2float(weight[c * K * R * S + k * R * S + r * S + s]);
+                        sum += in_val * weight_val;
+                    }
+                    w = (ow + pad - (s + 1) * dilation) / stride;
                 }
             }
         }
     }
-
     sum += __half2float(bias[k]);
     out[k * OH * OW + oh * OW + ow] = __float2half(sum);
 }
+
 
 void ConvTranspose2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStream_t stream) {
     size_t N = in->shape[0];
@@ -237,6 +240,7 @@ void LeakyReLU(Tensor *inout, cudaStream_t stream) {
  * @param [in3]   bias: [K]
  * @param [out]    out: [N, K, OH, OW]
  */
+
 __global__ void Conv2d_kernel(half *in, half *weight, half *bias, half *out,
                               size_t N, size_t C, size_t H, size_t W,
                               size_t K, size_t R, size_t S,
@@ -248,24 +252,39 @@ __global__ void Conv2d_kernel(half *in, half *weight, half *bias, half *out,
     int ow_block = blockIdx.z % ((OW + blockDim.y - 1) / blockDim.y);
     int oh = oh_block * blockDim.x + threadIdx.x;
     int ow = ow_block * blockDim.y + threadIdx.y;
-
     if (oh < OH && ow < OW) {
         half sum = bias[k];
         for (int c = 0; c < C; c++) {
             for (int r = 0; r < R; r++) {
-                for (int s = 0; s < S; s++) {
-                    int h = oh * stride - pad + r * dilation;
-                    int w = ow * stride - pad + s * dilation;
-                    if (h >= 0 && h < H && w >= 0 && w < W) {
-                        sum = __hadd(sum, __hmul(in[n * C * H * W + c * H * W + h * W + w],
-                                                 weight[k * C * R * S + c * R * S + r * S + s]));
+                int h = oh * stride - pad + r * dilation;
+                int w = ow * stride - pad;
+                if (h >= 0 && h < H) {
+                    //if (S >= 4) {
+                    //if (-1) {
+#pragma unroll
+                    for (int s = 0; s < 4; s++) {
+                        if (w >= 0 && w < W) {
+                            sum = __hadd(sum, __hmul(in[n * C * H * W + c * H * W + h * W + w],
+                                                     weight[k * C * R * S + c * R * S + r * S + s]));
+                        }
+                        w += dilation;
                     }
+                    // } else {
+                    //     for (int s = 0; s < S; s++) {
+                    //         if (w >= 0 && w < W) {
+                    //             sum = __hadd(sum, __hmul(in[n * C * H * W + c * H * W + h * W + w],
+                    //                                      weight[k * C * R * S + c * R * S + r * S + s]));
+                    //         }
+                    //         w += dilation;
+                    //     }
+                    // }
                 }
             }
         }
         out[n * K * OH * OW + k * OH * OW + oh * OW + ow] = sum;
     }
 }
+
 
 void Conv2d(Tensor *in, Tensor *weight, Tensor *bias, Tensor *out, cudaStream_t stream) {
     size_t N = in->shape[0];
